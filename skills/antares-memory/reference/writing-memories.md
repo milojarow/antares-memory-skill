@@ -20,70 +20,72 @@
 
 **Selectivity target:** 2–6 memories per substantive session. >8 is suspicious — you're probably transcribing.
 
-## Global vs project — the decision rule
+## HOME vs CURRENT — the decision rule
 
-**Global** (`$CLAUDE_MEMORY_HOME`): the lesson applies across multiple projects. Cross-cutting.
+**HOME** = the slug dir for `$HOME` (`~/.claude/projects/<slugify($HOME)>/memory/`). The lesson applies across multiple cwds. Cross-cutting.
 
-**Project** (`<project_root>/.claude/memory/`): the lesson only matters inside this one codebase.
+**CURRENT** = the slug dir for the current `$PWD`. The lesson only matters when working in this specific cwd.
+
+When `cwd == $HOME`, HOME and CURRENT are the same dir.
 
 | Memory | Scope | Why |
 |---|---|---|
-| "API X has an undocumented header requirement" | global (`reference_*`) | The API quirk is the same in every project that uses it. |
-| "This codebase uses table Y for Z" | project (`project_*`) | Only true here. |
-| "Operator prefers terse answers" | global (`feedback_*`) | Applies everywhere. |
-| "Operator wants the deploy script to retry on 502" | project (`project_*`) | Specific to that deploy pipeline. |
-| "Tool `foo` requires Python 3.12 — wheels not on PyPI for 3.13" | global (`tool_*`) | Will hit them again in another project. |
-| "`paru` rejects `--noconfirm` before `-S`" | global (`feedback_*`) | Distro-level, every project. |
+| "API X has an undocumented header requirement" | HOME (`reference_*`) | The API quirk is the same in every project that uses it. |
+| "This codebase uses table Y for Z" | CURRENT (`project_*`) | Only true in this cwd. |
+| "Operator prefers terse answers" | HOME (`feedback_*`) | Applies everywhere. |
+| "Operator wants the deploy script to retry on 502" | CURRENT (`project_*`) | Specific to that deploy pipeline. |
+| "Tool `foo` requires Python 3.12 — wheels not on PyPI for 3.13" | HOME (`tool_*`) | Will hit them again in another cwd. |
+| "`paru` rejects `--noconfirm` before `-S`" | HOME (`feedback_*`) | Distro-level, every cwd. |
 
-**Rule of thumb for `tool_*`**: if the operator will use this tool/service in *another* project too, it's GLOBAL. Project-specific configuration of a tool (e.g., "this project uses table X for Y") goes PROJECT.
+**Rule of thumb for `tool_*`**: if the operator will use this tool/service from *another* cwd too, it's HOME. Cwd-specific configuration of a tool (e.g., "this cwd uses table X for Y") goes CURRENT.
 
-**When in doubt → global.** A useful global memory occasionally re-appearing in a project search is harmless. A project memory that should have been global is invisible from elsewhere and gets lost.
+**When in doubt → HOME.** A useful HOME memory occasionally re-appearing in another cwd's search is harmless. A CURRENT memory that should have been HOME is invisible from elsewhere and gets lost.
 
 ## Mandatory dedup before writing
 
 For every memory you're about to create:
 
-1. **Grep global** by keyword:
+1. **Grep HOME** by keyword:
    ```bash
-   ls "$CLAUDE_MEMORY_HOME" | grep -i <keyword>
+   ls "$(antares_home_memory_dir 2>/dev/null || echo ~/.claude/projects/-$USER/memory)" | grep -i <keyword>
    ```
-2. **If in a project**, grep project too:
+   (Or just `ls ~/.claude/projects/<slugify-of-HOME>/memory/`.)
+
+2. **If CURRENT ≠ HOME**, grep CURRENT too:
    ```bash
-   ls <project_root>/.claude/memory/ | grep -i <keyword>
+   ls ~/.claude/projects/<slugify-of-PWD>/memory/ | grep -i <keyword>
    ```
+
 3. If a similar file exists, **READ** it. Decide:
    - **Enrich** via `Edit` — add a new bullet, expand the rule, refine the example.
    - **Skip** if redundant.
    - **Replace** only if the existing version is wrong.
+
 4. Never create `feedback_X.md` if `feedback_X_v2.md` or a near-synonym exists — `Edit` the original.
 
-## Creating a project scope
+## Working in a new cwd for the first time
 
-Project scope is **opt-in**. No script creates `<project>/.claude/memory/` automatically — the operator (or you, when writing the first project-scoped memory) must create it:
+The slug dir is created lazily. The first time Claude Code runs in a cwd, the slug dir doesn't exist yet. That's fine — Claude Code creates it on demand, and the first time the indexer runs there (SessionStart hook), it gets bootstrapped with an empty DB.
+
+If you want to seed a CURRENT slug with an initial `MEMORY.md`:
 
 ```bash
-mkdir -p .claude/memory
-echo '.claude/memory/' >> .gitignore       # if memories shouldn't be tracked
-echo '.claude/memory/.memory-index.db' >> .gitignore   # always — DB is a derivative
+mkdir -p ~/.claude/projects/<slug>/memory
+cat > ~/.claude/projects/<slug>/memory/MEMORY.md <<EOF
+# Memory — <cwd description>
+
+(initial directives for this cwd)
+EOF
 ```
 
-Once the directory exists:
-- `SessionStart` reindex picks it up the next time a session is opened with `cwd` inside the project.
-- `UserPromptSubmit` searches both scopes when `cwd` walks up to a `.claude/memory/`.
-- `PostToolUse` reindexes the project scope when a `.md` is added/edited under it.
+Once the file exists, Claude Code auto-loads it on every session that opens with that cwd.
 
-If the directory doesn't exist, the project scope is invisible to all hooks — they silently fall back to global only.
+## Promoting CURRENT → HOME
 
-**Should `.claude/memory/` be tracked?** Two answers:
-- **Solo project**: track it. The memories are part of the project's institutional knowledge.
-- **Client / shared repo**: gitignore. Memories often contain operator commentary, judgments, sensitive context you don't want shared.
+If a CURRENT memory turns out to generalize (the same lesson hits in another cwd), promote it:
 
-## Promoting project → global
-
-If a project memory turns out to generalize (the same lesson hits in another project), promote it:
-
-1. `Edit` the project file: append a note `→ promoted to global as <new-name>`. Leave the file (don't delete) so the project's history stays intact.
-2. Create the global version with the generalized framing (strip project-specific examples; keep the core rule).
+1. `Edit` the CURRENT file: append a note `→ promoted to HOME as <new-name>`. Leave the file (don't delete) so the cwd's history stays intact.
+2. Create the HOME version with the generalized framing (strip cwd-specific examples; keep the core rule).
 3. The next reindex picks up both.
 
 ## Common writing failures
@@ -96,15 +98,16 @@ If a project memory turns out to generalize (the same lesson hits in another pro
 | Memory has no `Why:` line | Without rationale, future-you can't judge edge cases. Add it. |
 | Memory is a 5-step debugging recipe | The recipe goes in the commit message. The *lesson* (the underlying truth) goes in the memory. |
 | Two memories that look like duplicates | Run dedup. Either merge or delete one. |
+| Wrote to HOME when you meant CURRENT (or vice versa) | `mv` the file to the right slug dir; the PostToolUse hook reindexes both. |
 
 ## After writing
 
-The PostToolUse hook auto-reindexes the affected scope async. Within a few seconds, the new memory is searchable. No manual reindex needed.
+The PostToolUse hook auto-reindexes the affected slug async. Within a few seconds, the new memory is searchable. No manual reindex needed.
 
-If the new memory should be **always-loaded** (not just on semantic match), add a one-line pointer to `MEMORY.md`:
+If the new memory should be **always-loaded** (not just on semantic match), add a one-line pointer to that slug's `MEMORY.md`:
 
 ```
 - [Title](filename.md) — one-line hook
 ```
 
-`MEMORY.md` is the curated always-on layer. Keep it short — it's loaded into every session's context.
+`MEMORY.md` is the curated always-on layer FOR THAT SLUG. Claude Code auto-loads it when cwd matches the slug. Keep it short — it's overhead per prompt while in that cwd.

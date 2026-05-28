@@ -18,11 +18,15 @@ warn() { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$*"; }
 bad()  { printf '  %s✗%s %s\n' "$RED" "$RESET" "$*"; }
 hdr()  { printf '\n%s%s%s\n' "$BOLD" "$*" "$RESET"; }
 
+HOME_MEMORY_DIR="$(antares_home_memory_dir)"
+CURRENT_MEMORY_DIR="$(antares_memory_dir_for "$PWD")"
+
 hdr "Paths"
-ok "CLAUDE_MEMORY_HOME = $CLAUDE_MEMORY_HOME"
-ok "ANTARES_VENV       = $ANTARES_VENV"
-ok "ANTARES_STATE      = $ANTARES_STATE"
-ok "ANTARES_MODEL      = $ANTARES_MODEL"
+ok "HOME slug    = $HOME_MEMORY_DIR"
+ok "CURRENT slug = $CURRENT_MEMORY_DIR"
+ok "ANTARES_VENV  = $ANTARES_VENV"
+ok "ANTARES_STATE = $ANTARES_STATE"
+ok "ANTARES_MODEL = $ANTARES_MODEL"
 
 hdr "Venv"
 if antares_venv_ready; then
@@ -33,25 +37,35 @@ else
     bad "venv not ready — run /antares-memory:install"
 fi
 
-hdr "Storage"
-if [[ -d "$CLAUDE_MEMORY_HOME" ]]; then
-    md_count=$(find "$CLAUDE_MEMORY_HOME" -maxdepth 1 -name '*.md' -not -name 'MEMORY.md' 2>/dev/null | wc -l)
-    journal_count=$(find "$CLAUDE_MEMORY_HOME/journal" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
-    ok "$md_count memory file(s), $journal_count journal entries"
-    if [[ -f "$CLAUDE_MEMORY_HOME/MEMORY.md" ]]; then
-        ok "MEMORY.md present"
-    else
-        warn "MEMORY.md missing — run /antares-memory:install"
+scope_summary() {
+    local label="$1"
+    local mdir="$2"
+    hdr "$label memory dir"
+    if [[ ! -d "$mdir" ]]; then
+        warn "$mdir does not exist (will be created on first use)"
+        return
     fi
-    if [[ -f "$CLAUDE_MEMORY_HOME/.memory-index.db" ]]; then
-        db_size=$(du -h "$CLAUDE_MEMORY_HOME/.memory-index.db" | cut -f1)
-        chunks=$(sqlite3 "$CLAUDE_MEMORY_HOME/.memory-index.db" "SELECT COUNT(*) FROM memory_chunks" 2>/dev/null || echo "?")
+    local md_count journal_count db_size chunks
+    md_count=$(find "$mdir" -maxdepth 1 -name '*.md' -not -name 'MEMORY.md' 2>/dev/null | wc -l)
+    journal_count=$(find "$mdir/journal" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
+    ok "$md_count memory file(s), $journal_count journal entries"
+    if [[ -f "$mdir/MEMORY.md" ]]; then
+        ok "MEMORY.md present (Claude Code auto-loads it when cwd matches this slug)"
+    else
+        warn "MEMORY.md missing"
+    fi
+    if [[ -f "$mdir/.memory-index.db" ]]; then
+        db_size=$(du -h "$mdir/.memory-index.db" | cut -f1)
+        chunks=$(sqlite3 "$mdir/.memory-index.db" "SELECT COUNT(*) FROM memory_chunks" 2>/dev/null || echo "?")
         ok "SQLite index: $db_size, $chunks chunks"
     else
-        warn "no SQLite index yet — will be created on first reindex"
+        warn "no SQLite index yet"
     fi
-else
-    bad "$CLAUDE_MEMORY_HOME does not exist — run /antares-memory:install"
+}
+
+scope_summary "HOME" "$HOME_MEMORY_DIR"
+if [[ "$CURRENT_MEMORY_DIR" != "$HOME_MEMORY_DIR" ]]; then
+    scope_summary "CURRENT" "$CURRENT_MEMORY_DIR"
 fi
 
 hdr "Daemon"

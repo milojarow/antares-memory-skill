@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# migrate.sh — move existing memories from ~/.claude/projects/<slug>/memory/
-# into the antares-memory home ($CLAUDE_MEMORY_HOME, default ~/.claude/memory/).
+# migrate.sh — helper for moving existing memories into the slug-based layout.
 #
-# Safe by default: refuses to overwrite existing files. Prints a plan and
-# requires explicit --apply to act.
+# In v0.2+, the skill uses Claude Code's native ~/.claude/projects/<slug>/memory/
+# convention. If you came from an older path-based layout, this script helps
+# consolidate stragglers.
+#
+# Safe by default: refuses to overwrite. Prints a plan; requires --apply to act.
 
 set -euo pipefail
 
@@ -26,33 +28,47 @@ for arg in "$@"; do
             cat <<EOF
 Usage: $0 [--src=<dir>] [--apply]
 
-By default, scans ~/.claude/projects/*/memory/ and prints a migration plan.
-Add --apply to actually move the files. Use --src to point at a specific source.
+Consolidates memories into the HOME slug dir:
+    $(antares_home_memory_dir)
 
-Targets: \$CLAUDE_MEMORY_HOME = $CLAUDE_MEMORY_HOME
+Common sources you might want to migrate from:
+  - A legacy ~/.claude/memory/ from antares-memory v0.1.x
+  - Memories scattered across non-HOME slug dirs that you want global
+
+By default, scans ~/.claude/memory (if it exists) and prints a plan. Add
+--apply to actually move the files. Use --src to point at a specific source
+(e.g. --src=~/.claude/projects/-home-old-slug/memory).
 EOF
             exit 0
             ;;
     esac
 done
 
-# Detect source directory automatically if not provided.
-if [[ -z "$SRC" ]]; then
-    candidates=()
-    while IFS= read -r d; do
-        candidates+=("$d")
-    done < <(find "$HOME/.claude/projects" -maxdepth 2 -type d -name memory 2>/dev/null)
+DST="$(antares_home_memory_dir)"
 
-    if [[ ${#candidates[@]} -eq 0 ]]; then
-        echo "No legacy memory dirs found under ~/.claude/projects/*/memory/"
+# Default source: the v0.1.x location.
+if [[ -z "$SRC" ]]; then
+    LEGACY="$HOME/.claude/memory"
+    if [[ -d "$LEGACY" ]]; then
+        SRC="$LEGACY"
+    else
+        cat <<EOF
+${BOLD}Nothing obvious to migrate.${RESET}
+
+Your HOME slug dir already exists at:
+  $DST
+
+If you have memories elsewhere you want to consolidate here, pass:
+  ${GREEN}--src=<path>${RESET}
+
+Common cases:
+  --src=~/.claude/memory                                  (legacy v0.1.x)
+  --src=~/.claude/projects/<some-old-slug>/memory         (specific other slug)
+
+Run with --help for usage.
+EOF
         exit 0
     fi
-    if [[ ${#candidates[@]} -gt 1 ]]; then
-        echo "Multiple legacy memory dirs found. Specify one with --src=<path>:"
-        printf '  %s\n' "${candidates[@]}"
-        exit 1
-    fi
-    SRC="${candidates[0]}"
 fi
 
 if [[ ! -d "$SRC" ]]; then
@@ -60,7 +76,11 @@ if [[ ! -d "$SRC" ]]; then
     exit 1
 fi
 
-DST="$CLAUDE_MEMORY_HOME"
+if [[ "$(realpath "$SRC")" == "$(realpath "$DST")" ]]; then
+    echo "Source and destination are the same. Nothing to do."
+    exit 0
+fi
+
 mkdir -p "$DST/journal"
 
 printf '%sMigration plan%s\n' "$BOLD" "$RESET"
@@ -68,10 +88,8 @@ printf '  Source: %s\n' "$SRC"
 printf '  Target: %s\n\n' "$DST"
 
 moves=()
-skips=()
 conflicts=()
 
-# Find .md files (incl. journal/) and SQLite index.
 while IFS= read -r f; do
     rel="${f#$SRC/}"
     target="$DST/$rel"
@@ -103,7 +121,6 @@ if [[ ${#moves[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Apply moves.
 for rel in "${moves[@]}"; do
     src_f="$SRC/$rel"
     tgt_f="$DST/$rel"
@@ -112,11 +129,10 @@ for rel in "${moves[@]}"; do
 done
 printf '\n%sMoved %d file(s).%s\n' "$GREEN" "${#moves[@]}" "$RESET"
 
-# Reindex so the moved files are searchable.
 if antares_venv_ready; then
-    echo "Reindexing..."
-    "$ANTARES_VENV_PY" "$SCRIPT_DIR/scripts/memory-index.py" --scope global || true
+    echo "Reindexing HOME slug..."
+    "$ANTARES_VENV_PY" "$SCRIPT_DIR/scripts/memory-index.py" --scope home || true
     echo "Done. Daemon will see the new files on the next query."
 else
-    echo "Venv not ready — run /antares-memory:install first, then reindex will happen automatically."
+    echo "Venv not ready — run /antares-memory:install first."
 fi

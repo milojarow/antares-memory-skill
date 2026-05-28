@@ -38,19 +38,19 @@ Documents the memory system: frontmatter taxonomy (`feedback_*` / `reference_*` 
 
 5 layers (see `skills/antares-memory/reference/architecture.md` for detail):
 
-1. **Storage** — flat `.md` files at `$CLAUDE_MEMORY_HOME` (default `~/.claude/memory/`)
-2. **Indexer** — `memory-index.py`: paragraph-aware chunking (120 tokens, overlap 30) + sentence-transformers embeddings + SQLite FTS5
-3. **Search** — `memory-search.py` + `memory-search-daemon.py`: hybrid cosine (70%) + BM25 (30%), threshold 0.35, UNIX socket
-4. **Auto-inject** — `memory-search-hook.sh` on UserPromptSubmit; `memory-journal-init.sh` on SessionStart
-5. **Auto-extract** — `memory-precompact-extract.sh` spawns `claude -p` headless with `memory-precompact-prompt.txt` on PreCompact
+1. **Storage** — flat `.md` files at `~/.claude/projects/<slugify(cwd)>/memory/` — Claude Code's native convention; each cwd has its own slug dir, each with its own `MEMORY.md` auto-loaded when cwd matches
+2. **Indexer** — `memory-index.py`: paragraph-aware chunking (120 tokens, overlap 30) + sentence-transformers embeddings + SQLite FTS5, per slug
+3. **Search** — `memory-search.py` + `memory-search-daemon.py`: hybrid cosine (70%) + BM25 (30%), threshold 0.35, UNIX socket; queries the HOME and CURRENT slug DBs
+4. **Auto-inject** — `memory-search-hook.sh` on UserPromptSubmit; `memory-journal-init.sh` on SessionStart (journal lives in HOME slug)
+5. **Auto-extract** — `memory-precompact-extract.sh` spawns `claude -p` headless with `memory-precompact-prompt.txt` on PreCompact, writes to HOME or CURRENT per the lesson
 
 ## Persistence layout (after install)
 
 ```
-~/.claude/memory/                            # USER DATA — never overwritten by plugin updates
-├── MEMORY.md                                # Always-loaded index (curated by operator)
+~/.claude/projects/<slug>/memory/            # USER DATA — Claude Code's native location
+├── MEMORY.md                                # Auto-loaded by Claude Code when cwd matches this slug
 ├── *.md                                     # Memory files (frontmatter + body)
-├── journal/YYYY-MM-DD.md                    # Daily journal
+├── journal/YYYY-MM-DD.md                    # Daily journal (only in HOME slug)
 └── .memory-index.db                         # SQLite (embeddings + FTS5)
 
 ~/.local/share/antares-memory/venv/          # Python venv (sentence-transformers, numpy, torch CPU)
@@ -58,6 +58,8 @@ Documents the memory system: frontmatter taxonomy (`feedback_*` / `reference_*` 
 ~/.config/systemd/user/antares-memory-daemon.service   # Daemon unit
 $XDG_RUNTIME_DIR/memory-search.sock          # Daemon socket (ephemeral)
 ```
+
+`<slug>` = `cwd.replace('/', '-')`. HOME slug = `slugify($HOME)`. Memory files NEVER get overwritten by plugin updates — they live in Claude Code's own data dir, outside the plugin cache.
 
 The plugin cache (`~/.claude/plugins/cache/.../antares-memory-skill/`) holds the scripts. Plugin updates rebuild it. Persistent state lives outside.
 

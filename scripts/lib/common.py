@@ -1,12 +1,20 @@
 """scripts/lib/common.py — shared env resolution for antares-memory Python scripts.
 
+Storage model: Claude Code's native convention.
+
+    ~/.claude/projects/<slugify(cwd)>/memory/   ← auto-loaded MEMORY.md per cwd
+    ~/.claude/projects/<slugify($HOME)>/memory/ ← "global" by convention
+
+The skill mirrors this so operators never need `@`-imports in CLAUDE.md —
+Claude Code already loads MEMORY.md from the cwd's slug dir.
+
 Import from sibling scripts:
 
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
     from common import (
-        CLAUDE_MEMORY_HOME, ANTARES_MODEL, ANTARES_STATE,
-        global_db_path, find_project_root,
+        ANTARES_MODEL, ANTARES_STATE, ANTARES_PROJECTS_DIR,
+        slugify, memory_dir_for, home_memory_dir, db_path_for,
     )
 """
 
@@ -14,9 +22,6 @@ import os
 
 HOME = os.path.expanduser("~")
 
-CLAUDE_MEMORY_HOME = os.environ.get(
-    "CLAUDE_MEMORY_HOME", os.path.join(HOME, ".claude", "memory")
-)
 ANTARES_VENV = os.environ.get(
     "ANTARES_VENV", os.path.join(HOME, ".local", "share", "antares-memory", "venv")
 )
@@ -26,38 +31,28 @@ ANTARES_STATE = os.environ.get(
 ANTARES_MODEL = os.environ.get(
     "ANTARES_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
 )
-
-CLAUDE_HOME = os.path.join(HOME, ".claude")
-
-
-def global_db_path():
-    """Path to the global memory SQLite index."""
-    return os.path.join(CLAUDE_MEMORY_HOME, ".memory-index.db")
+ANTARES_PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
 
 
-def project_db_path(project_root):
-    """Path to a project-scoped memory SQLite index."""
-    return os.path.join(project_root, ".claude", "memory", ".memory-index.db")
+def slugify(path):
+    """Replicate Claude Code's cwd → slug convention.
 
-
-def find_project_root(cwd):
-    """Walk up from cwd looking for a directory containing .claude/memory/.
-
-    Returns the project root path (parent of .claude/), or None if no project
-    context. Excludes paths under ~/.claude/ to avoid confusion with the global
-    memory location (which lives under the user's home, not under any project).
+    Empirically: '/' → '-'. Edge cases inside ~/.claude/ itself may not
+    round-trip perfectly, but those are not normal operator working dirs.
     """
-    if not cwd:
-        return None
-    current = os.path.abspath(cwd)
-    if current == CLAUDE_HOME or current.startswith(CLAUDE_HOME + os.sep):
-        return None
-    while current and current != "/" and current != HOME:
-        candidate = os.path.join(current, ".claude", "memory")
-        if os.path.isdir(candidate):
-            return current
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    return None
+    return path.replace("/", "-")
+
+
+def memory_dir_for(cwd):
+    """Path to the memory dir for a given cwd. Does NOT create."""
+    return os.path.join(ANTARES_PROJECTS_DIR, slugify(cwd), "memory")
+
+
+def home_memory_dir():
+    """The 'global' memory dir — Claude Code loads its MEMORY.md when cwd == $HOME."""
+    return memory_dir_for(HOME)
+
+
+def db_path_for(memory_dir):
+    """SQLite index path for a given memory dir."""
+    return os.path.join(memory_dir, ".memory-index.db")

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# PostToolUse hook — if a Write/Edit/MultiEdit touched a memory .md file,
-# trigger an incremental reindex in the background so the new content is
-# searchable by the UserPromptSubmit hook within the same session.
+# PostToolUse hook — if a Write/Edit/MultiEdit touched a memory .md file
+# (anywhere under ~/.claude/projects/<slug>/memory/), trigger an incremental
+# reindex in the background so the new content is searchable by the
+# UserPromptSubmit hook within the same session.
 #
 # Failsafe: any error → exit 0, never block the tool flow.
 
-# Re-entrancy guard: skip when invoked from a headless sub-claude (PreCompact).
 [[ -n "${CLAUDE_HEADLESS:-}" ]] && exit 0
 
 trap 'exit 0' ERR
@@ -26,22 +26,23 @@ file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev
 
 [[ -z "$file_path" ]] && exit 0
 
-# Determine scope from path:
-#   - $CLAUDE_MEMORY_HOME/...   → global scope
-#   - <PROJ>/.claude/memory/... → project scope, project root = <PROJ>
-scope=""
-project_root=""
+# Match: $ANTARES_PROJECTS_DIR/<slug>/memory/...
+# That means the parent of the file is somewhere under a slug's memory/ dir.
 case "$file_path" in
-  "$CLAUDE_MEMORY_HOME"/*)
-    scope="global"
-    ;;
-  */.claude/memory/*)
-    project_root="${file_path%/.claude/memory/*}"
-    [[ -n "$project_root" && -d "$project_root/.claude/memory" ]] && scope="project"
-    ;;
+  "$ANTARES_PROJECTS_DIR"/*/memory/*) ;;
+  *) exit 0 ;;
 esac
 
-[[ -z "$scope" ]] && exit 0
+# Extract slug → reconstruct the original cwd to pass to the indexer.
+# Path structure: $ANTARES_PROJECTS_DIR/<slug>/memory/<rest>
+rest="${file_path#"$ANTARES_PROJECTS_DIR"/}"   # <slug>/memory/<rest>
+slug="${rest%%/memory/*}"
+
+# Reverse slugify: '-' → '/'. Lossy at edges; for our use the recovered cwd
+# only needs to make memory_dir_for(cwd) match the original slug, which the
+# indexer recomputes anyway. We just need ANY cwd that slugifies to <slug>.
+cwd="/${slug//-/'/'}"
+cwd="${cwd//\/\//\/}"   # collapse accidental double slashes
 
 # Skip MEMORY.md itself (always-loaded index, not indexed content).
 [[ "$(basename "$file_path")" == "MEMORY.md" ]] && exit 0
@@ -52,17 +53,14 @@ case "$file_path" in
 esac
 [[ "$file_path" == *.md ]] || exit 0
 
-# Async reindex of just the affected scope. memory-index.py is idempotent
-# and only re-embeds files with mtime > stored, so racing PostToolUse hooks
-# coalesce naturally.
+# Async reindex of just the affected slug. We pass --cwd so the indexer
+# resolves the same slug dir on its own.
 {
-  printf '[%s] reindex scope=%s root=%s triggered by %s\n' \
-    "$(date -Iseconds)" "$scope" "${project_root:-N/A}" "$file_path" >>"$LOG"
-  cwd_arg=()
-  [[ -n "$project_root" ]] && cwd_arg=(--cwd "$project_root")
+  printf '[%s] reindex slug=%s triggered by %s\n' \
+    "$(date -Iseconds)" "$slug" "$file_path" >>"$LOG"
   "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" \
-    --scope "$scope" "${cwd_arg[@]}" >>"$LOG" 2>&1
-  printf '[%s] reindex done scope=%s\n' "$(date -Iseconds)" "$scope" >>"$LOG"
+    --scope current --cwd "$cwd" >>"$LOG" 2>&1
+  printf '[%s] reindex done slug=%s\n' "$(date -Iseconds)" "$slug" >>"$LOG"
 } </dev/null >/dev/null 2>&1 &
 disown
 

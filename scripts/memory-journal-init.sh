@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # memory-journal-init.sh — SessionStart hook: create today's journal file
-# and inject today's + yesterday's journal content as additionalContext.
+# (in the HOME slug's memory dir, by convention) and inject today's +
+# yesterday's journal content as additionalContext.
 
-# Re-entrancy guard: skip when invoked from a headless sub-claude (PreCompact).
 [[ -n "${CLAUDE_HEADLESS:-}" ]] && { echo '{}'; exit 0; }
 
 set -uo pipefail
@@ -11,7 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-JOURNAL_DIR="$CLAUDE_MEMORY_HOME/journal"
+# Journal lives in the HOME slug's memory dir — one journal regardless of cwd.
+JOURNAL_DIR="$(antares_home_memory_dir)/journal"
 TODAY=$(date +%Y-%m-%d)
 YESTERDAY=$(date -d 'yesterday' +%Y-%m-%d)
 TODAY_FILE="$JOURNAL_DIR/$TODAY.md"

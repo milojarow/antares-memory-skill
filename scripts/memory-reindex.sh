@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # memory-reindex.sh — SessionStart hook: conditionally re-index memory embeddings.
-# Reads cwd from stdin (SessionStart payload), reindexes global + project scope
-# if cwd has a project root with .claude/memory/. Per-scope freshness is decided
-# by the Python indexer (file mtime vs stored mtime).
+# Reads cwd from stdin (SessionStart payload), reindexes the home + current
+# slug dirs if any .md file is newer than the DB.
 #
 # Gracefully skips if the venv is not set up (operator hasn't run install yet).
 
-# Re-entrancy guard: skip when invoked from a headless sub-claude (PreCompact).
 [[ -n "${CLAUDE_HEADLESS:-}" ]] && { echo '{}'; exit 0; }
 
 set -uo pipefail
@@ -28,29 +26,39 @@ fi
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 [[ -z "$cwd" ]] && cwd="$PWD"
 
-GLOBAL_DB="$CLAUDE_MEMORY_HOME/.memory-index.db"
-
-needs_global_reindex=true
-if [[ -f "$GLOBAL_DB" ]]; then
-    db_mtime=$(stat -c %Y "$GLOBAL_DB")
-    needs_global_reindex=false
+# Helper: is any .md newer than the DB?
+needs_reindex() {
+    local mdir="$1"
+    local db="$mdir/.memory-index.db"
+    [[ -d "$mdir" ]] || return 1
+    if [[ ! -f "$db" ]]; then
+        # No DB yet — reindex if there's at least one .md
+        [[ -n "$(find "$mdir" -name '*.md' -print -quit 2>/dev/null)" ]]
+        return $?
+    fi
+    local db_mtime
+    db_mtime=$(stat -c %Y "$db")
     while IFS= read -r -d '' file; do
+        local file_mtime
         file_mtime=$(stat -c %Y "$file")
-        if (( file_mtime > db_mtime )); then
-            needs_global_reindex=true
-            break
-        fi
-    done < <(find "$CLAUDE_MEMORY_HOME" -name '*.md' -print0 2>/dev/null)
+        (( file_mtime > db_mtime )) && return 0
+    done < <(find "$mdir" -name '*.md' -print0 2>/dev/null)
+    return 1
+}
+
+home_dir="$(antares_home_memory_dir)"
+current_dir="$(antares_memory_dir_for "$cwd")"
+
+# Index home if stale (or new).
+if needs_reindex "$home_dir"; then
+    "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope home >&2 2>/dev/null || true
 fi
 
-if [[ "$needs_global_reindex" == "true" ]]; then
-    "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope global >&2 2>/dev/null || true
+# Index current if it's a different dir and stale.
+if [[ "$current_dir" != "$home_dir" ]] && needs_reindex "$current_dir"; then
+    "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" \
+        --scope current --cwd "$cwd" >&2 2>/dev/null || true
 fi
-
-# Project scope — let the Python indexer figure out if cwd has one. If not,
-# get_scopes returns empty for project and the call exits cleanly.
-"$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" \
-    --scope project --cwd "$cwd" >&2 2>/dev/null || true
 
 echo '{}'
 exit 0

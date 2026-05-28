@@ -8,12 +8,12 @@ A complete memory system for Claude Code that survives across sessions: the assi
 
 Everything ships in one plugin. After `/antares-memory:install`, you get:
 
-- **Storage** at `~/.claude/memory/` — flat directory of `.md` files with frontmatter taxonomy (`feedback_*`, `reference_*`, `project_*`, `user_*`, `tool_*`)
-- **Indexer** (`sentence-transformers` multilingual model) chunking files and storing embeddings in SQLite
-- **Search daemon** — UNIX socket, model pre-warmed in RAM, hybrid cosine + BM25
+- **Storage** at `~/.claude/projects/<slugify(cwd)>/memory/` — Claude Code's native location. Each cwd has its own slug dir. Memory files use a frontmatter taxonomy (`feedback_*`, `reference_*`, `project_*`, `user_*`, `tool_*`)
+- **Indexer** (`sentence-transformers` multilingual model) chunking files and storing embeddings per-slug in SQLite
+- **Search daemon** — UNIX socket, model pre-warmed in RAM, hybrid cosine + BM25, queries HOME + CURRENT slugs
 - **4 hooks** wired automatically (UserPromptSubmit, SessionStart, PreCompact, PostToolUse)
-- **Journal** (`memory/journal/YYYY-MM-DD.md`) loaded at session start
-- **Project scope** — drop `.claude/memory/` in any repo to layer project-only memories
+- **Journal** (`<HOME-slug>/memory/journal/YYYY-MM-DD.md`) loaded at session start
+- **Zero `@`-imports** in your `~/.claude/CLAUDE.md` — Claude Code already auto-loads `MEMORY.md` from the cwd's slug
 
 ### Why this skill exists
 
@@ -21,13 +21,13 @@ Everything ships in one plugin. After `/antares-memory:install`, you get:
 - **Semantic recall beats keyword grep.** Hybrid search (70% cosine + 30% BM25) finds memories you didn't know to look for.
 - **PreCompact is the only moment the transcript is still in memory.** A headless extractor at that point captures lessons that would otherwise be lost when context compresses.
 - **Daemon keeps the model warm.** First search after install is slow (model load); subsequent searches are sub-100ms.
-- **Plugin-hosted hooks survive `settings.json` rewrites.** Auto-update through marketplace just works.
+- **Slug-based storage mirrors Claude Code's native convention.** `MEMORY.md` auto-loads without any `@`-import — fully transparent for the operator.
 
 ## The skill
 
 | Skill | Description |
 |-------|-------------|
-| **antares-memory** | When to write a memory, where (global vs project), frontmatter taxonomy, tuning the search, troubleshooting the daemon, and operating the `/antares-memory:*` commands |
+| **antares-memory** | When to write a memory, where (HOME vs CURRENT slug), frontmatter taxonomy, tuning the search, troubleshooting the daemon, and operating the `/antares-memory:*` commands |
 
 ## Installation
 
@@ -43,28 +43,22 @@ Install the plugin:
 /plugin install antares-memory-skill@antares-memory-skill
 ```
 
-Run the one-time setup (creates venv, downloads the embedding model ~400MB, enables systemd daemon):
+Run the one-time setup (creates venv, downloads the embedding model ~400MB, enables systemd daemon, seeds your HOME slug's MEMORY.md):
 
 ```
 /antares-memory:install
 ```
 
-Add this line to your `~/.claude/CLAUDE.md` so the memory index is always-loaded:
-
-```
-@~/.claude/memory/MEMORY.md
-```
-
-Done. Open a new session — your next `UserPromptSubmit` will hit the daemon and inject relevant memories.
+That's it. Open a new session from `$HOME` and `MEMORY.md` is already in context — Claude Code's native cwd-slug convention loads it automatically.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `/antares-memory:install` | One-time setup: venv, model, daemon, dirs. Idempotent. |
-| `/antares-memory:status` | Diagnose daemon, index, hook health. |
-| `/antares-memory:migrate` | Move memories from `~/.claude/projects/<slug>/memory/` to `~/.claude/memory/`. |
-| `/antares-memory:uninstall` | Remove daemon, venv, dirs. Preserves `~/.claude/memory/` (your data). |
+| `/antares-memory:install` | One-time setup: venv, model, daemon, HOME slug dir. Idempotent. |
+| `/antares-memory:status` | Diagnose daemon, indices, hook health for HOME + CURRENT slugs. |
+| `/antares-memory:migrate` | Consolidate stragglers from a non-standard path (legacy v0.1.x `~/.claude/memory/`) into the HOME slug. |
+| `/antares-memory:uninstall` | Remove daemon, venv, dirs. Preserves all memory files. |
 
 ## Requirements
 

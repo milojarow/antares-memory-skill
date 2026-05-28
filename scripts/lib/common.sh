@@ -5,17 +5,22 @@
 #   # shellcheck source=lib/common.sh
 #   source "$SCRIPT_DIR/lib/common.sh"
 #
-# Reads these env vars (with sane defaults):
-#   CLAUDE_MEMORY_HOME  — where memory .md files live (default ~/.claude/memory)
-#   ANTARES_VENV        — Python venv with sentence-transformers (default ~/.local/share/antares-memory/venv)
-#   ANTARES_STATE       — logs / locks / runtime state (default ~/.local/state/antares-memory)
-#   ANTARES_MODEL       — sentence-transformers model name (default paraphrase-multilingual-MiniLM-L12-v2)
+# Storage model: Claude Code's native convention.
+#   ~/.claude/projects/<slugify(cwd)>/memory/   ← auto-loaded MEMORY.md, per cwd
+#   ~/.claude/projects/<slugify($HOME)>/memory/ ← "global" (when cwd == $HOME)
 #
-# Exports:
-#   ANTARES_VENV_PY     — path to the venv's python3 binary
-#   ANTARES_SCRIPTS_DIR — parent dir of this lib/ (where the scripts live)
+# The skill mirrors this convention so the operator never needs `@`-imports in
+# CLAUDE.md — Claude Code already loads MEMORY.md from the cwd's slug dir.
+#
+# Reads these env vars (with sane defaults):
+#   ANTARES_VENV        — Python venv with sentence-transformers
+#                          (default ~/.local/share/antares-memory/venv)
+#   ANTARES_STATE       — logs / locks / runtime state
+#                          (default ~/.local/state/antares-memory)
+#   ANTARES_MODEL       — sentence-transformers model name
+#                          (default paraphrase-multilingual-MiniLM-L12-v2)
+#   ANTARES_PRECOMPACT_BUDGET / _MODEL / _TIMEOUT — extractor knobs
 
-export CLAUDE_MEMORY_HOME="${CLAUDE_MEMORY_HOME:-$HOME/.claude/memory}"
 export ANTARES_VENV="${ANTARES_VENV:-$HOME/.local/share/antares-memory/venv}"
 export ANTARES_STATE="${ANTARES_STATE:-$HOME/.local/state/antares-memory}"
 export ANTARES_MODEL="${ANTARES_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}"
@@ -27,13 +32,31 @@ export ANTARES_PRECOMPACT_BUDGET="${ANTARES_PRECOMPACT_BUDGET:-1.00}"
 export ANTARES_PRECOMPACT_MODEL="${ANTARES_PRECOMPACT_MODEL:-sonnet}"
 export ANTARES_PRECOMPACT_TIMEOUT="${ANTARES_PRECOMPACT_TIMEOUT:-300}"
 
-# ANTARES_SCRIPTS_DIR is the directory holding the .sh / .py scripts. The
-# library lives at <scripts>/lib/common.sh, so walk one level up.
+# Root of all slug-based memory dirs.
+export ANTARES_PROJECTS_DIR="$HOME/.claude/projects"
+
 _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ANTARES_SCRIPTS_DIR="$(cd "$_lib_dir/.." && pwd)"
 
-# Best-effort log dir (idempotent, never fatal).
 mkdir -p "$ANTARES_STATE/logs" 2>/dev/null || true
+
+# slugify <path> — replicate Claude Code's cwd → slug convention.
+# Empirically: '/' → '-'. Edge cases (paths inside ~/.claude/ itself) may not
+# round-trip perfectly, but those are not normal operator working dirs.
+antares_slugify() {
+    printf '%s' "$1" | tr '/' '-'
+}
+
+# memory dir for a given cwd. Does NOT create — pure path computation.
+antares_memory_dir_for() {
+    local cwd="${1:-$PWD}"
+    printf '%s/%s/memory' "$ANTARES_PROJECTS_DIR" "$(antares_slugify "$cwd")"
+}
+
+# the "home" memory dir — used as global by convention (cwd=$HOME slug).
+antares_home_memory_dir() {
+    antares_memory_dir_for "$HOME"
+}
 
 # Boolean: does the venv exist and have sentence-transformers?
 antares_venv_ready() {

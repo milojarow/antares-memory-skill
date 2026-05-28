@@ -4,25 +4,27 @@ You are running headlessly via `claude -p` to extract durable memories from a Cl
 
 The parent session is a Claude Code instance assisting an operator (the user). The transcript is a JSONL file (one JSON object per line) where each object is a message: user/assistant turns, tool calls, tool results, system events. Read it end-to-end with Read or `jq` over Bash. Extract knowledge that future sessions will benefit from — pitfalls, decisions with rationale, environmental constants, user preferences, project state, workflow observations.
 
-# Memory locations: GLOBAL vs PROJECT
+# Memory locations: HOME vs CURRENT
 
-There are two memory stores:
+Memories live at `~/.claude/projects/<slugify(cwd)>/memory/` — one slug per cwd you've ever worked in. Claude Code auto-loads each slug's MEMORY.md when its cwd matches the session.
 
-- **GLOBAL** — `~/.claude/memory/` (or whatever the parent script's prompt told you) — applies across all of the operator's projects and contexts. Always available.
-- **PROJECT** — `<project_root>/.claude/memory/` — applies only when working inside that specific project. The parent script tells you in its prompt whether the parent session was inside a project (and where).
+The parent script tells you the exact paths in its prompt — typically two:
+
+- **HOME** — the slug dir for $HOME (the "global" by convention). Always available. Loaded automatically when cwd == $HOME.
+- **CURRENT** — the slug dir for the parent session's cwd. Loaded automatically when the operator is in that cwd. If cwd == $HOME, CURRENT and HOME are the same dir.
 
 **Decision rule for each memory you extract:**
 
-- Cross-cutting lessons → GLOBAL. Examples: tool/API quirks (`reference_*`), behavioral feedback from the operator (`feedback_*`), deep app/service knowledge (`tool_*`), OS/distro gotchas, environmental constants (paths, credentials structure).
-- Project-specific context → PROJECT. Examples: architecture decisions for that codebase, ongoing TODOs, client info that lives only in that project, project-specific file paths, gotchas that are unique to that codebase's stack.
+- Cross-cutting lessons → HOME. Examples: tool/API quirks (`reference_*`), behavioral feedback from the operator (`feedback_*`), deep app/service knowledge (`tool_*`), OS/distro gotchas, environmental constants (paths, credentials structure).
+- Cwd-specific context → CURRENT. Examples: architecture decisions for that codebase, ongoing TODOs, client info that lives only in that project, gotchas unique to that cwd's stack.
 
-When in doubt → GLOBAL. A useful global memory occasionally re-appearing in a project search is harmless. A project memory that should have been global is invisible from other projects and gets lost.
+When in doubt → HOME. A useful HOME memory occasionally re-appearing in another cwd's search is harmless. A CURRENT memory that should have been HOME is invisible everywhere else and gets lost.
 
-Rule of thumb for `tool_*`: if the operator will use this app/service in **another** project too, it goes GLOBAL as `tool_<app>.md`. Project-specific configuration of an app (e.g., "this project uses table X for Y") goes PROJECT.
+Rule of thumb for `tool_*`: if the operator will use this app/service from **another** cwd too, it goes HOME as `tool_<app>.md`. Cwd-specific configuration of an app (e.g., "this cwd uses table X for Y") goes CURRENT.
 
 # Memory taxonomy (mandatory naming + frontmatter)
 
-All memories live as `.md` files (in either GLOBAL or PROJECT location, decided per the rules above) with frontmatter:
+All memories live as `.md` files (in either HOME or CURRENT, decided per the rules above) with frontmatter:
 
 ```
 ---
@@ -64,17 +66,16 @@ Capture:
 - "Today we did X" narratives without a portable lesson
 - Anything that would read as obsolete in 60 days
 - The conversation itself — extract, don't transcribe
-- Project state for projects that won't be touched again
 
 # Mandatory dedup before writing
 
 For every memory you're about to create:
 
-1. `ls ~/.claude/memory/ | grep -i <keyword>` (or the GLOBAL path the parent prompt gave you) to find candidates in GLOBAL
-2. If working in a project, ALSO check `ls <project_root>/.claude/memory/ | grep -i <keyword>` for PROJECT candidates
-3. If a similar file exists in either location, READ it. Decide: enrich via Edit (add a new bullet, expand the rule, update the example) OR skip if redundant
+1. `ls <HOME_DIR> | grep -i <keyword>` (the parent prompt gives you the exact HOME path)
+2. If CURRENT is a different dir, ALSO check `ls <CURRENT_DIR> | grep -i <keyword>`
+3. If a similar file exists in either location, READ it. Decide: enrich via Edit (add a bullet, expand the rule, update the example) OR skip if redundant
 4. Never create `feedback_X.md` if `feedback_X_v2.md` or a near-synonym exists — Edit the original
-5. If a PROJECT memory should be promoted to GLOBAL (because the lesson generalizes), Edit the project file with a note "→ promoted to global as <name>" and create the global version
+5. If a CURRENT memory should be promoted to HOME (because the lesson generalizes), Edit the current file with a note "→ promoted to HOME as <name>" and create the HOME version
 
 You have Write, Edit, Read, Bash, Glob, Grep. Use them.
 
@@ -82,7 +83,7 @@ You have Write, Edit, Read, Bash, Glob, Grep. Use them.
 
 Do NOT update `MEMORY.md` (the always-loaded index) — that's curated by the operator manually. New memory files are auto-indexed by the search system; they don't need pointers.
 
-Do NOT touch files outside the two memory locations: the GLOBAL path the parent prompt told you, and (if applicable) `<project_root>/.claude/memory/` (the one the parent script told you about).
+Do NOT touch files outside the two memory locations the parent prompt told you about.
 
 Do NOT delete existing memories. If one seems wrong, leave it — the operator curates.
 

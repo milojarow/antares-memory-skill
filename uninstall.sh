@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # uninstall.sh — remove daemon, venv, logs.
-# DOES NOT touch $CLAUDE_MEMORY_HOME (your memory files). Those are yours.
+# DOES NOT touch ~/.claude/projects/<slug>/memory/ (your memory files, all slugs).
+# Those live in Claude Code's data dir and are yours.
 
 set -uo pipefail
 
@@ -22,7 +23,7 @@ ${BOLD}This will remove:${RESET}
   - Logs:   $ANTARES_STATE
 
 ${BOLD}This will NOT touch:${RESET}
-  - $CLAUDE_MEMORY_HOME  (your memory files — preserved)
+  - ~/.claude/projects/<slug>/memory/  (your memory files — all slugs, preserved)
 
 Re-run with --yes to confirm:
   bash "$0" --yes
@@ -45,9 +46,10 @@ rm -rf "$ANTARES_STATE"
 printf '%s✓%s state removed\n' "$GREEN" "$RESET"
 
 echo
-printf '%sYour memory files remain at:%s %s\n' "$YELLOW" "$RESET" "$CLAUDE_MEMORY_HOME"
-printf '%sDelete them manually if you also want them gone:%s\n' "$YELLOW" "$RESET"
-printf '  rm -rf "%s"\n' "$CLAUDE_MEMORY_HOME"
+HOME_MEMORY_DIR="$(antares_home_memory_dir)"
+printf '%sYour memory files remain under:%s %s\n' "$YELLOW" "$RESET" "$HOME/.claude/projects/<slug>/memory/"
+printf '%sHOME slug:%s %s\n' "$YELLOW" "$RESET" "$HOME_MEMORY_DIR"
+printf '%sDelete manually if you also want them gone (use with care — every cwd you'\''ve touched has a slug):%s\n' "$YELLOW" "$RESET"
 echo
 echo "Finish the cleanup by removing the plugin in Claude Code:"
 echo "  /plugin uninstall antares-memory-skill@antares-memory-skill"

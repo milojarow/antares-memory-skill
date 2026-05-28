@@ -2,43 +2,59 @@
 
 Five layers. Each runs independently; failures degrade gracefully (the user's prompt never blocks).
 
-## 1. Storage
+## 1. Storage — slug-based, native to Claude Code
+
+Memories live at:
 
 ```
-$CLAUDE_MEMORY_HOME/            ← default ~/.claude/memory/
-├── MEMORY.md                   ← always-loaded index (curated by operator)
-├── feedback_*.md               ← corrections, anti-patterns
-├── reference_*.md              ← stable technical knowledge
-├── project_*.md                ← project state
-├── user_*.md                   ← operator preferences
-├── tool_*.md                   ← env/tool detail
-├── journal/
-│   └── YYYY-MM-DD.md           ← one file per day
-└── .memory-index.db            ← SQLite (embeddings + FTS5)
-
-<project_root>/.claude/memory/   ← project-scoped, same schema, opt-in
-├── *.md
-└── .memory-index.db
+~/.claude/projects/<slugify(cwd)>/memory/
 ```
+
+`slugify` is approximately `cwd.replace('/', '-')`. Some examples:
+
+| cwd | slug | memory dir |
+|---|---|---|
+| `/home/juan` | `-home-juan` | `~/.claude/projects/-home-juan/memory/` |
+| `/home/juan/projects/foo` | `-home-juan-projects-foo` | `~/.claude/projects/-home-juan-projects-foo/memory/` |
+
+Each slug dir contains:
+
+```
+~/.claude/projects/<slug>/memory/
+├── MEMORY.md                ← auto-loaded by Claude Code when cwd matches this slug
+├── feedback_*.md            ← corrections, anti-patterns
+├── reference_*.md           ← stable technical knowledge
+├── project_*.md             ← project state
+├── user_*.md                ← operator preferences
+├── tool_*.md                ← env/tool detail
+├── journal/                 ← only in the HOME slug — one journal store regardless of cwd
+│   └── YYYY-MM-DD.md
+└── .memory-index.db         ← SQLite (embeddings + FTS5)
+```
+
+Two scopes the skill operates on:
+
+- **HOME slug** = `slugify($HOME)`. The "global" by convention — loaded when cwd == $HOME.
+- **CURRENT slug** = `slugify($PWD)`. The "project" by convention — loaded when cwd matches.
+
+When cwd == $HOME, HOME and CURRENT are the same dir.
 
 Files are POSIX `.md` files. The DB is a derivative — losing it is harmless (`memory-index.py` rebuilds from scratch).
 
-### How `MEMORY.md` gets loaded
+### How `MEMORY.md` gets loaded — no `@`-import required
 
-`MEMORY.md` is the always-on layer. It's NOT injected by any hook — instead, it relies on Claude Code's CLAUDE.md `@`-import mechanism. The operator adds one line to their `~/.claude/CLAUDE.md`:
+This is the whole reason the skill uses the slug convention: **Claude Code automatically loads `~/.claude/projects/<slug-matching-cwd>/memory/MEMORY.md` into the session at start.**
 
-```
-@~/.claude/memory/MEMORY.md
-```
+You do NOT need to add anything to your `~/.claude/CLAUDE.md`. No `@`-import. It just works because that path matches Claude Code's native cwd-slug convention.
 
-Claude Code loads `~/.claude/CLAUDE.md` automatically into every session's system prompt, and `@`-imports cascade — so `MEMORY.md` content lands in the system prompt before any hook fires.
+The other `.md` files in the dir are NOT loaded this way. They're indexed by `memory-index.py` and pulled in only on semantic match by the `UserPromptSubmit` hook (the `<auto-loaded-memory>` block).
 
-The other `.md` files in the directory are NOT loaded this way. They're indexed and pulled in only on semantic match by the `UserPromptSubmit` hook (the `<auto-loaded-memory>` block). Difference matters:
+Practical difference:
 
-- `MEMORY.md` → always loaded (paid for every prompt, regardless of relevance)
-- All other memory files → loaded only when their content semantically matches the current prompt
+- `MEMORY.md` → always loaded for the matching cwd (paid every prompt, regardless of relevance)
+- All other memory files → loaded only when content semantically matches the current prompt
 
-Keep `MEMORY.md` short — it's overhead per prompt. Use it for directives you want enforced unconditionally; let semantic recall handle the rest.
+Keep `MEMORY.md` short — it's overhead per prompt. Use it for directives you want enforced unconditionally for that scope; let semantic recall handle the rest.
 
 ## 2. Indexer
 
@@ -46,9 +62,9 @@ Keep `MEMORY.md` short — it's overhead per prompt. Use it for directives you w
 
 | Trigger | When | Behavior |
 |---|---|---|
-| `SessionStart` (matcher `startup\|resume\|clear\|compact`) | every session | reindex if any `.md` mtime > DB mtime |
-| `PostToolUse` (matcher `Write\|Edit\|MultiEdit`) | after every edit | async background reindex of the affected scope |
-| Manual | `bash $ANTARES_VENV_PY .../memory-index.py` | full pass |
+| `SessionStart` (matcher `startup\|resume\|clear\|compact`) | every session | reindex HOME + CURRENT slugs if any `.md` mtime > DB mtime |
+| `PostToolUse` (matcher `Write\|Edit\|MultiEdit`) | after every edit | async background reindex of the affected slug |
+| Manual | `bash $ANTARES_VENV_PY .../memory-index.py --scope home` | full pass |
 
 ### Chunking
 
@@ -78,6 +94,8 @@ CREATE VIRTUAL TABLE memory_fts USING fts5(
 
 The indexer migrates v1 (file-level) → v2 (chunked) automatically on first run after upgrade.
 
+Each slug has its own `.memory-index.db`. The daemon opens whichever DBs it needs per query (HOME, CURRENT, or both).
+
 ## 3. Search
 
 `scripts/memory-search.py` / `scripts/memory-search-daemon.py` — hybrid search.
@@ -89,7 +107,7 @@ final_score = 0.7 × cosine(query_embedding, chunk_embedding)
             + 0.3 × normalized_bm25(query_text, chunk)
 ```
 
-Both weights and the `0.35` minimum threshold are env-tunable.
+Both weights and the `0.35` minimum threshold are env-tunable for CLI/daemon queries (not for the hook itself — see SKILL.md).
 
 ### Per-file deduplication
 
@@ -108,7 +126,7 @@ Wire protocol (one JSON request, one JSON response, newline-terminated):
  "top_k": 5, "threshold": 0.35, "types": "all"}
 
 {"ok": true, "hits": [{"score": 0.71, "path": "...", "snippet": "..."}],
- "timing_ms": 87, "scopes_searched": ["global", "project:foo"]}
+ "timing_ms": 87, "scopes_searched": ["home", "current:..."]}
 ```
 
 `{"op": "ping"}` is the health check used by `/antares-memory:status`.
@@ -120,7 +138,7 @@ Wire protocol (one JSON request, one JSON response, newline-terminated):
 `scripts/memory-search-hook.sh` runs on every prompt ≥ 30 chars:
 
 1. Read prompt + cwd from hook stdin.
-2. Query the daemon (`top_k=5`, `threshold=0.35`).
+2. Query the daemon with `cwd` so it resolves the HOME + CURRENT slugs.
 3. For each hit, read the full file content.
 4. Emit `<auto-loaded-memory>...</auto-loaded-memory>` as `additionalContext`.
 
@@ -130,22 +148,22 @@ If the daemon is down or returns no hits, emits `{}` — no context injected, us
 
 `scripts/memory-journal-init.sh` runs on session start:
 
-1. Create today's `journal/YYYY-MM-DD.md` if missing (with a `# Journal: YYYY-MM-DD` header).
-2. Read today's file (up to 15 KB) and yesterday's (up to 8 KB).
+1. Create today's `<HOME-slug>/memory/journal/YYYY-MM-DD.md` if missing.
+2. Read today's file (up to 15 KB) and yesterday's (up to 8 KB) — both from the HOME slug.
 3. Emit both as `<journal-today>` and `<journal-yesterday>` `additionalContext`.
 
-This means yesterday's lessons are in context at the start of every session.
+The journal lives in the HOME slug only — one journal store regardless of cwd. (`MEMORY.md` is per slug; the journal is global.)
 
 ## 5. Auto-extract
 
 `scripts/memory-precompact-extract.sh` is the most expensive layer — runs when Claude Code is about to compact the conversation.
 
 1. Extract text-only transcript from the JSONL (capped at last 100 KB) to a temp file.
-2. Detect whether the parent session was inside a project (walk up looking for `.claude/memory/`).
-3. Build a contextualized prompt for the sub-Claude (telling it where global lives, whether a project memory dir exists).
+2. Resolve HOME slug dir + CURRENT slug dir (computed from parent session's cwd).
+3. Build a contextualized prompt for the sub-Claude (telling it the two paths, the decision rule HOME vs CURRENT).
 4. Spawn `claude -p` headless:
-   - `--model sonnet` (cheap enough for extraction tasks)
-   - `--max-budget-usd 1.00` (hard cap)
+   - `--model "$ANTARES_PRECOMPACT_MODEL"` (default `sonnet`)
+   - `--max-budget-usd "$ANTARES_PRECOMPACT_BUDGET"` (default `1.00`)
    - `--no-session-persistence` (transient)
    - `--permission-mode bypassPermissions` (sub-claude can write freely under the memory dirs)
    - `--append-system-prompt-file memory-precompact-prompt.txt` (the taxonomy + decision rules)

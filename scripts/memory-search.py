@@ -5,16 +5,19 @@ Combines semantic similarity (cosine, 70%) with keyword matching (BM25, 30%)
 for better results on both conceptual queries and exact name lookups.
 Returns the best-scoring chunk per file (deduplication).
 
+Storage model: Claude Code's native slug convention. Each cwd has its own
+`~/.claude/projects/<slugify(cwd)>/memory/` dir + `.memory-index.db`.
+
 Scopes:
-    global   — $CLAUDE_MEMORY_HOME/.memory-index.db
-    project  — <cwd-walked-up>/.claude/memory/.memory-index.db (opt-in)
-    all      — both, results merged and ranked by combined score (default)
+    home     — slug dir for $HOME (the "global" by convention)
+    current  — slug dir for the current $PWD (or --cwd)
+    all      — both (default; deduped if same)
 
 Usage:
     memory-search.py "query"
     memory-search.py "eww rounded corners" -n 3
     memory-search.py "systemd path" -t memory
-    memory-search.py "tunnel mongo" --scope project --cwd /path/to/project
+    memory-search.py "tunnel mongo" --scope current --cwd /path/to/proj
 """
 
 import argparse
@@ -25,9 +28,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 from common import (  # noqa: E402
     ANTARES_MODEL,
-    find_project_root,
-    global_db_path,
-    project_db_path,
+    db_path_for,
+    home_memory_dir,
+    memory_dir_for,
 )
 
 import numpy as np  # noqa: E402
@@ -38,18 +41,33 @@ MIN_SCORE = 0.35
 
 
 def get_db_paths(scope, cwd=None):
-    """Return list of (scope_name, db_path) tuples for the requested scope(s)."""
+    """Return list of (scope_name, db_path) tuples for the requested scope(s).
+
+    Deduped: if current resolves to the same dir as home (cwd == $HOME),
+    only one entry is returned.
+    """
+    cwd = cwd or os.getcwd()
+    home_dir = home_memory_dir()
+    current_dir = memory_dir_for(cwd)
+
     paths = []
-    if scope in ("global", "all"):
-        gdb = global_db_path()
-        if os.path.exists(gdb):
-            paths.append(("global", gdb))
-    if scope in ("project", "all"):
-        project_root = find_project_root(cwd)
-        if project_root:
-            pdb = project_db_path(project_root)
-            if os.path.exists(pdb):
-                paths.append((f"project:{os.path.basename(project_root)}", pdb))
+    seen = set()
+
+    def maybe_add(scope_name, mdir):
+        db = db_path_for(mdir)
+        if mdir in seen:
+            return
+        if os.path.exists(db):
+            paths.append((scope_name, db))
+            seen.add(mdir)
+
+    if scope in ("home", "all"):
+        maybe_add("home", home_dir)
+    if scope in ("current", "all"):
+        if current_dir != home_dir:
+            label = f"current:{os.path.basename(os.path.dirname(current_dir))}"
+            maybe_add(label, current_dir)
+
     return paths
 
 
@@ -250,13 +268,13 @@ def main():
         "-s",
         "--scope",
         default="all",
-        choices=["global", "project", "all"],
-        help="Search scope (default: all = global + project). Project discovered via cwd walk-up.",
+        choices=["home", "current", "all"],
+        help="Search scope (default: all = home + current).",
     )
     parser.add_argument(
         "--cwd",
         default=os.getcwd(),
-        help="Working directory used to resolve project scope (default: $PWD).",
+        help="Working directory used to resolve current scope (default: $PWD).",
     )
     parser.add_argument(
         "--threshold",

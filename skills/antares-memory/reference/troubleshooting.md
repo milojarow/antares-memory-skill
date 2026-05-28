@@ -53,12 +53,30 @@ Walk the chain:
    ```
    If results appear here but not in `<auto-loaded-memory>`, the prompt going through the hook may be different (Claude Code can rewrite prompts; check the actual `prompt` field in the hook input).
 
+## `MEMORY.md` isn't auto-loaded
+
+The skill relies on Claude Code's native convention: it loads `~/.claude/projects/<slugify(cwd)>/memory/MEMORY.md`.
+
+If your `MEMORY.md` isn't showing up in the session's system prompt:
+
+1. **Check cwd slug match**:
+   ```bash
+   echo "cwd: $PWD"
+   echo "expected slug: $(echo "$PWD" | tr / -)"
+   ls ~/.claude/projects/ | grep "$(echo "$PWD" | tr / -)"
+   ```
+   If the slug dir doesn't exist for this cwd, the file isn't there. Move or copy `MEMORY.md` to the right slug dir.
+
+2. **Confirm Claude Code version supports this convention**. The native auto-loading of `~/.claude/projects/<slug>/memory/MEMORY.md` is a stable Claude Code behavior. If it doesn't seem to work, sanity-check by inspecting the system prompt of a fresh session — `MEMORY.md` content should appear under a heading like *"Contents of /home/.../memory/MEMORY.md (user's auto-memory, persists across conversations)"*.
+
+3. **Don't add `@~/.claude/...` to your CLAUDE.md unless you're sure the path won't auto-load** — the `@`-import is for v0.1.x or non-standard paths. With v0.2+ slug layout, it's redundant.
+
 ## Memories not being indexed after I add them
 
 The PostToolUse hook runs async. Within ~5 seconds the chunks should appear in the DB:
 
 ```bash
-sqlite3 "$CLAUDE_MEMORY_HOME/.memory-index.db" \
+sqlite3 ~/.claude/projects/<slug>/memory/.memory-index.db \
   "SELECT COUNT(*) FROM memory_chunks WHERE file_path LIKE '%feedback_my_new_thing%'"
 ```
 
@@ -66,12 +84,14 @@ If 0:
 
 1. `tail $ANTARES_STATE/logs/memory-reindex-auto.log` — is the hook firing?
 2. Confirm the file is `.md` (not `.markdown` or something else).
-3. Confirm it's under `$CLAUDE_MEMORY_HOME` OR `<project>/.claude/memory/` (the hook's path matching).
+3. Confirm it's under `~/.claude/projects/<slug>/memory/` (the hook's path matching).
 
 Manual reindex:
 
 ```bash
-"$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope global
+"$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope home
+# or for a specific cwd:
+"$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope current --cwd /path
 ```
 
 ## FTS5 missing
@@ -97,59 +117,55 @@ Common log lines:
 
 - `SKIP no transcript_path` — Claude Code didn't supply a transcript file. Nothing to extract.
 - `SKIP venv not ready` — `/antares-memory:install` wasn't run yet.
-- `BUDGET_EXCEEDED` — sub-claude hit the `--max-budget-usd 1.00` cap. Partial writes (if any) before the cap are kept. Lessons from this transcript may be incomplete. Raise the cap if needed.
-- `TIMEOUT` — sub-claude took > 300 seconds. Probably stuck on a tool call. Rare; check `cat $XDG_RUNTIME_DIR/antares-memory-precompact-prepared.md | head -50` to see the prepared transcript size.
+- `BUDGET_EXCEEDED` — sub-claude hit the `--max-budget-usd` cap (default $1.00). Partial writes (if any) before the cap are kept. Raise the cap via `ANTARES_PRECOMPACT_BUDGET` env var.
+- `TIMEOUT` — sub-claude took > `ANTARES_PRECOMPACT_TIMEOUT` seconds (default 300). Rare; check `cat $XDG_RUNTIME_DIR/antares-memory-precompact-prepared.md | head -50` to see the prepared transcript size.
 - `OK turns=N cost=$X` — sub-claude finished, may have written nothing if it judged nothing was worth saving. Look at the `RESULT:` line to see the extraction summary.
 
-To force-trigger a manual extraction (testing): not directly supported — PreCompact fires when Claude Code decides to compact. You can simulate by running the script with a stubbed input:
+To force-trigger a manual extraction (testing):
 
 ```bash
 echo '{"transcript_path":"/path/to/some.jsonl","session_id":"test","trigger":"manual","cwd":"'"$PWD"'"}' \
   | bash "${CLAUDE_PLUGIN_ROOT}/scripts/memory-precompact-extract.sh"
 ```
 
+## Cost-tuning the PreCompact extractor
+
+Set env vars (e.g. in `~/.config/environment.d/antares-memory.conf`):
+
+```
+ANTARES_PRECOMPACT_BUDGET=0.30
+ANTARES_PRECOMPACT_MODEL=haiku
+ANTARES_PRECOMPACT_TIMEOUT=180
+```
+
+These don't require editing the script (which lives in plugin cache and gets overwritten on update). They're consumed at extractor-spawn time.
+
 ## Index corrupted / wrong embeddings
 
 If you swapped models without dropping chunks, embeddings are in mixed dimensions and search results will be garbage.
 
-Recover:
+Recover for a given slug:
 
 ```bash
-sqlite3 "$CLAUDE_MEMORY_HOME/.memory-index.db" "DELETE FROM memory_chunks;"
-"$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope global
+DB=~/.claude/projects/<slug>/memory/.memory-index.db
+sqlite3 "$DB" "DELETE FROM memory_chunks;"
+"$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope home   # or --scope current --cwd /path
 systemctl --user restart antares-memory-daemon
 ```
 
 ## Multiple sessions, weird state
 
-The daemon is one process for the whole user. If you have 5 Claude Code sessions open, they all share it.
+The daemon is one process for the whole user. If you have 5 Claude Code sessions open across different cwds, they all share it. Each session's `UserPromptSubmit` hook sends its own `cwd` so the daemon resolves the right slugs per query.
 
-If the daemon dies and one session's hook is mid-query, that session gets an empty response (`{}`) and the prompt proceeds without auto-loaded memory — no error visible to the user, just one prompt without recall.
+If the daemon dies and one session's hook is mid-query, that session gets an empty response (`{}`) and the prompt proceeds without auto-loaded memory.
 
 Restart fixes everything: `systemctl --user restart antares-memory-daemon`.
-
-## Migration didn't take
-
-After `/antares-memory:migrate --apply`, verify:
-
-```bash
-ls "$CLAUDE_MEMORY_HOME" | wc -l       # should have the moved files
-ls ~/.claude/projects/*/memory/ 2>/dev/null  # should be near-empty (only files that were skipped due to existing target)
-```
-
-If the source still has unmoved files, `migrate.sh` skipped them because the target already existed. Inspect manually:
-
-```bash
-diff ~/.claude/projects/<slug>/memory/feedback_X.md "$CLAUDE_MEMORY_HOME/feedback_X.md"
-```
-
-Resolve by hand — pick the better version, delete the other.
 
 ## After plugin update, things break
 
 The plugin scripts live in `~/.claude/plugins/cache/.../antares-memory-skill/`. Plugin auto-update rebuilds this dir. The user's data, venv, and systemd unit are OUTSIDE this dir, so they survive.
 
-If a plugin update changes script logic in a way that's incompatible with the existing venv (e.g., the new code imports a package the venv doesn't have):
+If a plugin update changes script logic in a way that's incompatible with the existing venv:
 
 ```bash
 /antares-memory:install   # idempotent — adds missing pieces

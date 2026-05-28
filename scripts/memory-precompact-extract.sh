@@ -27,44 +27,30 @@ log() { printf '[%s] %s\n' "$(ts)" "$*" >>"$LOG"; }
 
 log "INVOKED session=$session_id trigger=$trigger cwd=$cwd transcript=$transcript_path"
 
-# Need venv (sub-claude doesn't use it, but project_root detection does run
-# either way — bail if install hasn't happened so we don't pretend to extract).
 if ! antares_venv_ready; then
     log "SKIP venv not ready ($ANTARES_VENV_PY)"
     exit 0
 fi
 
-# Detect project root via the same walk-up the indexer uses, so we can tell
-# the sub-claude where (if anywhere) the project memory lives. Empty string
-# means "no project context" → only global memory is available.
-project_root=""
-if [[ -n "$cwd" && "$cwd" != "$HOME"/.claude && "$cwd" != "$HOME"/.claude/* ]]; then
-    probe="$cwd"
-    while [[ -n "$probe" && "$probe" != "/" && "$probe" != "$HOME" ]]; do
-        if [[ -d "$probe/.claude/memory" ]]; then
-            project_root="$probe"
-            break
-        fi
-        probe="$(dirname "$probe")"
-    done
-fi
-log "PROJECT_ROOT=${project_root:-<none>}"
+# Resolve the two memory dirs the extractor may write to.
+home_dir="$(antares_home_memory_dir)"
+current_dir="$(antares_memory_dir_for "$cwd")"
+
+log "HOME_DIR=$home_dir CURRENT_DIR=$current_dir"
 
 if [[ -z "$transcript_path" || ! -f "$transcript_path" ]]; then
     log "SKIP no transcript_path or file missing"
     exit 0
 fi
 
-# Single-flight lock — prevent concurrent extractors (rare manual+auto race).
 if ! ( set -o noclobber; echo $$ > "$LOCK" ) 2>/dev/null; then
     log "SKIP another extractor running (pid=$(cat "$LOCK" 2>/dev/null || echo ?))"
     exit 0
 fi
 trap 'rm -f "$LOCK"' EXIT
 
-# Pre-process: extract user/assistant text from the JSONL transcript so the
-# sub-claude doesn't burn turns iterating through 2-5MB of raw tool calls and
-# tool results. Cap at last 100KB (~25K tokens) to keep extraction tractable.
+# Pre-process: extract text-only transcript so the sub-claude doesn't burn
+# turns iterating through 2-5MB of raw tool calls / tool results.
 PREPARED="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/antares-memory-precompact-prepared.md"
 {
     echo "# Conversation transcript (text content only, last ~100KB)"
@@ -79,22 +65,28 @@ PREPARED="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/antares-memory-precompact-prepa
 prepared_size=$(stat -c %s "$PREPARED" 2>/dev/null || echo 0)
 log "PREPARED size=${prepared_size}B path=$PREPARED"
 
-if [[ -n "$project_root" ]]; then
-    project_block="The parent session's CWD is:
+# Build the scope block: tell the sub-claude where home/current live.
+if [[ "$current_dir" == "$home_dir" ]]; then
+    scope_block="The parent session's CWD is:
   $cwd
 
-It is inside the project rooted at:
-  $project_root
+This is \$HOME — there is only one memory dir (the 'home' slug, which is the global by convention):
+  $home_dir
 
-This project has its own memory store at:
-  $project_root/.claude/memory/
-
-Decide per memory: write to GLOBAL ($CLAUDE_MEMORY_HOME/) for cross-cutting lessons (tool quirks, OS gotchas, behavioral feedback applicable to any project, deep app knowledge as tool_*). Write to PROJECT ($project_root/.claude/memory/) for context that only matters inside this codebase (architecture decisions, ongoing TODOs, project-specific gotchas, client info)."
+Write all extracted memories there."
 else
-    project_block="The parent session's CWD is:
+    scope_block="The parent session's CWD is:
   $cwd
 
-It is NOT inside any project (no <ancestor>/.claude/memory/ found). Write all extracted memories to GLOBAL ($CLAUDE_MEMORY_HOME/)."
+Two memory dirs are available:
+  HOME (the 'global' by convention):  $home_dir
+  CURRENT (this cwd's slug dir):      $current_dir
+
+Decide per memory:
+- Cross-cutting lessons (tool quirks, OS gotchas, behavioral feedback applicable to ANY cwd, deep app knowledge) → HOME.
+- Context that only matters when working in this cwd (architecture decisions for this codebase, ongoing TODOs, project-specific gotchas) → CURRENT.
+
+When in doubt → HOME. A useful HOME memory occasionally appearing while you're in another cwd is harmless. A CURRENT memory that should have been HOME is invisible everywhere else."
 fi
 
 sub_prompt="Compaction is about to happen for session $session_id (trigger=$trigger).
@@ -104,19 +96,14 @@ Read the pre-extracted text-only transcript at:
 
 It contains the user and assistant messages from the recent session (capped at last ~100KB), with tool calls and tool results stripped. Extract durable memories worth saving.
 
-$project_block
+$scope_block
 
-Follow the policy in your appended system prompt strictly. Dedup before writing (grep + ls in BOTH global and project memory dirs if applicable). When done, print the EXTRACTION SUMMARY block and exit. Do not wait for input."
+Follow the policy in your appended system prompt strictly. Dedup before writing (grep + ls in BOTH dirs if applicable). When done, print the EXTRACTION SUMMARY block and exit. Do not wait for input."
 
 start=$(date +%s)
 export CLAUDE_HEADLESS=1
 
 log "BEFORE_CLAUDE"
-# Disable ERR trap during the claude call — inherited in $() subshells is what
-# was aborting the whole script on the first sub-claude failure.
-# Text output (no --json-schema) is cheaper: half the turns, half the cost.
-# Output is for logging only — the real artifacts are the memory .md files
-# that the sub-claude writes via Write/Edit tools.
 trap - ERR
 set +e
 output=$(timeout --kill-after=5 "$ANTARES_PRECOMPACT_TIMEOUT" claude -p "$sub_prompt" \
@@ -136,7 +123,6 @@ elapsed=$(( $(date +%s) - start ))
 if (( rc == 124 || rc == 137 )); then
     log "TIMEOUT after ${elapsed}s rc=$rc"
 elif (( rc != 0 )); then
-    # Detect budget-exceeded — common case, logged distinctly so it's obvious.
     subtype=$(printf '%s' "$output" | jq -r '.subtype // empty' 2>/dev/null || true)
     cost=$(printf '%s' "$output" | jq -r '.total_cost_usd // "?"' 2>/dev/null || echo "?")
     if [[ "$subtype" == "error_max_budget_usd" ]]; then
@@ -154,21 +140,20 @@ else
     [[ -n "$result" ]] && log "RESULT: $result"
 fi
 
-# Reindex global + project (if any) so the next UserPromptSubmit sees the
-# newly-written memories immediately. Run synchronously.
-log "REINDEX global start"
-if timeout 60 "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope global >>"$LOG" 2>&1; then
-    log "REINDEX global done"
+# Reindex home + current (if different) so the next session sees the new memories.
+log "REINDEX home start"
+if timeout 60 "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope home >>"$LOG" 2>&1; then
+    log "REINDEX home done"
 else
-    log "REINDEX global failed rc=$?"
+    log "REINDEX home failed rc=$?"
 fi
 
-if [[ -n "$project_root" ]]; then
-    log "REINDEX project start (root=$project_root)"
-    if timeout 60 "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope project --cwd "$project_root" >>"$LOG" 2>&1; then
-        log "REINDEX project done"
+if [[ "$current_dir" != "$home_dir" ]]; then
+    log "REINDEX current start (cwd=$cwd)"
+    if timeout 60 "$ANTARES_VENV_PY" "$SCRIPT_DIR/memory-index.py" --scope current --cwd "$cwd" >>"$LOG" 2>&1; then
+        log "REINDEX current done"
     else
-        log "REINDEX project failed rc=$?"
+        log "REINDEX current failed rc=$?"
     fi
 fi
 

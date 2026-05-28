@@ -6,15 +6,19 @@ splits into ~120-token chunks with 30-token overlap,
 generates embeddings with sentence-transformers, stores in SQLite.
 Only re-embeds files with newer mtime than stored value.
 
+Storage model: Claude Code's native slug convention. Memory lives in
+`~/.claude/projects/<slugify(cwd)>/memory/`. Each cwd you've ever used
+with Claude Code has its own slug dir with its own MEMORY.md (auto-loaded).
+
 Scopes:
-    global   — $CLAUDE_MEMORY_HOME (default ~/.claude/memory)
-    project  — <cwd-walked-up>/.claude/memory/  (opt-in: dir must exist)
-    all      — both
+    home     — slug dir for $HOME (the "global" by convention)
+    current  — slug dir for the current $PWD (or --cwd)
+    all      — home + current (default; deduped if same)
 
 Usage:
-    memory-index.py                          # index global only
-    memory-index.py --scope all              # global + project (if cwd has one)
-    memory-index.py --scope project --cwd /path/to/project
+    memory-index.py                          # index home + current
+    memory-index.py --scope home
+    memory-index.py --scope current --cwd /path/to/proj
 """
 
 import argparse
@@ -27,31 +31,37 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 from common import (  # noqa: E402
     ANTARES_MODEL,
-    CLAUDE_MEMORY_HOME,
-    find_project_root,
+    HOME,
+    db_path_for,
+    home_memory_dir,
+    memory_dir_for,
 )
 
 import numpy as np  # noqa: E402
 
 # Chunk parameters — tuned for paraphrase-multilingual-MiniLM-L12-v2
 # (max_seq_length=128 tokens). Stay under 128 to avoid silent truncation.
-# If you swap to a model with a larger window, bump these accordingly.
 TARGET_TOKENS = 120
 OVERLAP_TOKENS = 30
 
 
 def get_scopes(scope_arg, cwd=None):
-    """Return list of (name, memory_dir) tuples for the requested scope(s)."""
+    """Return list of (name, memory_dir) tuples for the requested scope(s).
+
+    Deduped: if cwd == $HOME (current and home resolve to the same dir),
+    only one entry is returned.
+    """
+    cwd = cwd or os.getcwd()
+    home_dir = home_memory_dir()
+    current_dir = memory_dir_for(cwd)
+
     scopes = []
-    if scope_arg in ("global", "all"):
-        scopes.append(("global", CLAUDE_MEMORY_HOME))
-    if scope_arg in ("project", "all"):
-        project_root = find_project_root(cwd)
-        if project_root:
-            scopes.append((
-                f"project:{project_root}",
-                os.path.join(project_root, ".claude", "memory"),
-            ))
+    if scope_arg in ("home", "all"):
+        scopes.append(("home", home_dir))
+    if scope_arg in ("current", "all"):
+        if current_dir != home_dir:
+            scopes.append((f"current:{os.path.basename(os.path.dirname(current_dir))}",
+                           current_dir))
     return scopes
 
 
@@ -221,10 +231,9 @@ def needs_update(conn, filepath, mtime):
 def index_scope(model, scope_name, memory_dir):
     """Index a single scope's memory directory."""
     if not os.path.isdir(memory_dir):
-        # Project scope with no dir → no-op (caller already filtered, but be safe).
         return
 
-    db_path = os.path.join(memory_dir, ".memory-index.db")
+    db_path = db_path_for(memory_dir)
     conn = sqlite3.connect(db_path)
 
     version = detect_schema_version(conn)
@@ -272,9 +281,6 @@ def index_scope(model, scope_name, memory_dir):
             conn.execute("DELETE FROM memory_chunks WHERE file_path = ?", (db_file,))
             updated += 1
 
-    # Ensure FTS table exists and is in sync. Created here (not inside the
-    # search path) so the daemon can open the DB read-only without ever
-    # needing schema-write access.
     fts_exists = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_fts'"
     ).fetchone()
@@ -316,14 +322,15 @@ def main():
     parser.add_argument(
         "-s",
         "--scope",
-        default="global",
-        choices=["global", "project", "all"],
-        help="Scope to index (default: global). Project scope reads <cwd>/.claude/memory/.",
+        default="home",
+        choices=["home", "current", "all"],
+        help="Scope to index (default: home). 'current' = slug dir for --cwd; "
+             "'all' = home + current (deduped if same).",
     )
     parser.add_argument(
         "--cwd",
         default=os.getcwd(),
-        help="Working directory used to resolve project scope (default: $PWD).",
+        help="Working directory used to resolve current scope (default: $PWD).",
     )
     args = parser.parse_args()
 
@@ -340,14 +347,12 @@ def main():
     scopes = get_scopes(args.scope, args.cwd)
 
     if not scopes:
-        if args.scope == "project":
-            print(f"No project memory at cwd={args.cwd}", file=sys.stderr)
-            sys.exit(0)
-        print(f"No memory directories found for scope '{args.scope}'", file=sys.stderr)
-        sys.exit(1)
+        print(f"No memory directories resolved for scope '{args.scope}' "
+              f"(cwd={args.cwd})", file=sys.stderr)
+        sys.exit(0)
 
-    # Ensure global dir exists before opening DB (idempotent — install creates it,
-    # but a manual reindex on a fresh box shouldn't crash).
+    # Ensure dirs exist before opening the DBs (creating on first use is OK —
+    # they're under ~/.claude/projects/, which Claude Code populates anyway).
     for _name, memory_dir in scopes:
         os.makedirs(memory_dir, exist_ok=True)
 

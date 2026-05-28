@@ -59,14 +59,16 @@ The default works well for ES + EN mixed content. Other options:
 To swap:
 
 1. Set `ANTARES_MODEL` env var (or edit the systemd unit's `Environment=ANTARES_MODEL=...`).
-2. **Drop the embeddings** from the SQLite DB (different model = different embedding space):
+2. **Drop the embeddings** from every slug's SQLite DB (different model = different embedding space). For each slug you care about:
    ```bash
-   sqlite3 "$CLAUDE_MEMORY_HOME/.memory-index.db" "DELETE FROM memory_chunks;"
+   for db in ~/.claude/projects/*/memory/.memory-index.db; do
+       sqlite3 "$db" "DELETE FROM memory_chunks;"
+   done
    ```
 3. Restart the daemon: `systemctl --user restart antares-memory-daemon`.
-4. Trigger a full reindex:
+4. Trigger a full reindex of HOME (other slugs will reindex on next session-start in their cwd):
    ```bash
-   "$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope global
+   "$ANTARES_VENV_PY" "${CLAUDE_PLUGIN_ROOT}/scripts/memory-index.py" --scope home
    ```
 5. If the new model's max-seq-length is different from 128, edit `TARGET_TOKENS` in `memory-index.py` to stay under the new limit (e.g., 240 for a 256-token model).
 

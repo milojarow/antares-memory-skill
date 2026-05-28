@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # install.sh — one-time setup for antares-memory-skill.
 #
-# Idempotent. Safe to re-run. Reads env vars from scripts/lib/common.sh.
+# Storage model: Claude Code's native slug convention. Memories live at
+# ~/.claude/projects/<slugify(cwd)>/memory/ — one slug per cwd. The HOME slug
+# (cwd == $HOME) is the "global" by convention. Each slug's MEMORY.md is
+# auto-loaded by Claude Code when its cwd matches — no @-import required.
+#
+# Idempotent. Safe to re-run.
 
 set -euo pipefail
 
@@ -44,20 +49,23 @@ ok "deps present (python $py_ver, jq, socat, sqlite3, systemctl)"
 
 # ─── 2. Create directories ────────────────────────────────────────────────────
 say "2/7  Creating directories"
-mkdir -p "$CLAUDE_MEMORY_HOME/journal"
+HOME_MEMORY_DIR="$(antares_home_memory_dir)"
+mkdir -p "$HOME_MEMORY_DIR/journal"
 mkdir -p "$ANTARES_STATE/logs"
 mkdir -p "$(dirname "$ANTARES_VENV")"
-ok "$CLAUDE_MEMORY_HOME (memory store)"
+ok "$HOME_MEMORY_DIR (HOME slug memory store)"
 ok "$ANTARES_STATE (logs)"
 
 # ─── 3. Seed MEMORY.md ────────────────────────────────────────────────────────
-say "3/7  Seeding MEMORY.md (only if missing)"
-MEMORY_INDEX="$CLAUDE_MEMORY_HOME/MEMORY.md"
+say "3/7  Seeding MEMORY.md in HOME slug (only if missing)"
+MEMORY_INDEX="$HOME_MEMORY_DIR/MEMORY.md"
 if [[ ! -f "$MEMORY_INDEX" ]]; then
     cat > "$MEMORY_INDEX" <<'EOF'
 # Memory — Always-on directives
 
-These rules apply across ALL domains and stay loaded for every session.
+This file is auto-loaded by Claude Code whenever your cwd matches its slug
+(this file lives in the HOME slug — loaded when cwd == $HOME).
+
 Domain-specific memories auto-load via the `UserPromptSubmit` hook by
 semantic similarity. List below the few entries you want always-loaded
 regardless of the current prompt.
@@ -109,12 +117,10 @@ mkdir -p "$UNIT_DIR"
 
 DAEMON_SCRIPT="$SCRIPT_DIR/scripts/memory-search-daemon.py"
 
-# Render the template — substitute @VAR@ placeholders with absolute paths.
 sed \
     -e "s|@ANTARES_VENV_PY@|$ANTARES_VENV_PY|g" \
     -e "s|@ANTARES_DAEMON_SCRIPT@|$DAEMON_SCRIPT|g" \
     -e "s|@ANTARES_MODEL@|$ANTARES_MODEL|g" \
-    -e "s|@CLAUDE_MEMORY_HOME@|$CLAUDE_MEMORY_HOME|g" \
     -e "s|@ANTARES_STATE@|$ANTARES_STATE|g" \
     "$SCRIPT_DIR/systemd/antares-memory-daemon.service.tmpl" \
     > "$UNIT_FILE"
@@ -131,7 +137,7 @@ fi
 
 # ─── 6. First-time index pass ─────────────────────────────────────────────────
 say "6/7  Running first index pass"
-"$ANTARES_VENV_PY" "$SCRIPT_DIR/scripts/memory-index.py" --scope global || true
+"$ANTARES_VENV_PY" "$SCRIPT_DIR/scripts/memory-index.py" --scope home || true
 ok "index ready"
 
 # ─── 7. Final notes ───────────────────────────────────────────────────────────
@@ -140,16 +146,18 @@ echo
 cat <<EOF
 ${BOLD}Next steps:${RESET}
 
-  1. Add this line to your ${BOLD}~/.claude/CLAUDE.md${RESET} so the memory index is always-loaded:
+  1. Open a new Claude Code session from \$HOME. Claude Code automatically
+     loads:
+       ${GREEN}$MEMORY_INDEX${RESET}
+     as the session's MEMORY.md — no \`@\`-import in your CLAUDE.md needed.
 
-       ${GREEN}@$CLAUDE_MEMORY_HOME/MEMORY.md${RESET}
-
-  2. Open a new Claude Code session. Your next prompt will hit the daemon
-     and auto-load relevant memories via the UserPromptSubmit hook.
+  2. When you cd into a project, Claude Code loads:
+       ${GREEN}~/.claude/projects/<that-slug>/memory/MEMORY.md${RESET}
+     (if it exists). New cwds get their own slug dir on first session-start.
 
   3. Diagnose anytime: ${GREEN}/antares-memory:status${RESET}
 
-  4. Already have memories under ~/.claude/projects/<slug>/memory/ that you
-     want to migrate? Run: ${GREEN}/antares-memory:migrate${RESET}
+  4. Already have memories under a non-standard path that you want to
+     consolidate into the HOME slug? Run: ${GREEN}/antares-memory:migrate${RESET}
 
 EOF
