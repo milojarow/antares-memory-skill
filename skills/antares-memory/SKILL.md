@@ -5,6 +5,8 @@ description: Persistent semantic + keyword memory system for Claude Code. Use wh
 
 # antares-memory
 
+> **💭 ACTIVE-SKILL MARKER:** While `antares-memory` is active, begin every reply with 💭 so the operator sees at a glance that this skill is engaged. Do not omit it.
+
 A turnkey persistent memory system for Claude Code: cross-session knowledge written to flat `.md` files, indexed with embeddings + BM25, auto-injected on `UserPromptSubmit`, and auto-extracted on `PreCompact` before context is lost.
 
 ## Storage model — native Claude Code slug convention
