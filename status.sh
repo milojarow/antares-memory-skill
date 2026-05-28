@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# status.sh — diagnostic snapshot of the antares-memory installation.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "$SCRIPT_DIR/scripts/lib/common.sh"
+
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+RED=$'\033[31m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+ok()   { printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$*"; }
+bad()  { printf '  %s✗%s %s\n' "$RED" "$RESET" "$*"; }
+hdr()  { printf '\n%s%s%s\n' "$BOLD" "$*" "$RESET"; }
+
+hdr "Paths"
+ok "CLAUDE_MEMORY_HOME = $CLAUDE_MEMORY_HOME"
+ok "ANTARES_VENV       = $ANTARES_VENV"
+ok "ANTARES_STATE      = $ANTARES_STATE"
+ok "ANTARES_MODEL      = $ANTARES_MODEL"
+
+hdr "Venv"
+if antares_venv_ready; then
+    py_ver=$("$ANTARES_VENV_PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    st_ver=$("$ANTARES_VENV_PY" -c 'import sentence_transformers; print(sentence_transformers.__version__)' 2>/dev/null || echo "?")
+    ok "python $py_ver, sentence-transformers $st_ver"
+else
+    bad "venv not ready — run /antares-memory:install"
+fi
+
+hdr "Storage"
+if [[ -d "$CLAUDE_MEMORY_HOME" ]]; then
+    md_count=$(find "$CLAUDE_MEMORY_HOME" -maxdepth 1 -name '*.md' -not -name 'MEMORY.md' 2>/dev/null | wc -l)
+    journal_count=$(find "$CLAUDE_MEMORY_HOME/journal" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
+    ok "$md_count memory file(s), $journal_count journal entries"
+    if [[ -f "$CLAUDE_MEMORY_HOME/MEMORY.md" ]]; then
+        ok "MEMORY.md present"
+    else
+        warn "MEMORY.md missing — run /antares-memory:install"
+    fi
+    if [[ -f "$CLAUDE_MEMORY_HOME/.memory-index.db" ]]; then
+        db_size=$(du -h "$CLAUDE_MEMORY_HOME/.memory-index.db" | cut -f1)
+        chunks=$(sqlite3 "$CLAUDE_MEMORY_HOME/.memory-index.db" "SELECT COUNT(*) FROM memory_chunks" 2>/dev/null || echo "?")
+        ok "SQLite index: $db_size, $chunks chunks"
+    else
+        warn "no SQLite index yet — will be created on first reindex"
+    fi
+else
+    bad "$CLAUDE_MEMORY_HOME does not exist — run /antares-memory:install"
+fi
+
+hdr "Daemon"
+SOCKET="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/memory-search.sock"
+if systemctl --user is-active --quiet antares-memory-daemon.service 2>/dev/null; then
+    ok "systemd unit active"
+elif systemctl --user list-unit-files antares-memory-daemon.service 2>/dev/null | grep -q antares-memory; then
+    bad "systemd unit installed but not active"
+else
+    bad "systemd unit not installed"
+fi
+if [[ -S "$SOCKET" ]]; then
+    pong=$(printf '{"op":"ping"}\n' | timeout 2 socat -t 2 - "UNIX-CONNECT:$SOCKET" 2>/dev/null || echo "")
+    if [[ "$pong" == *'"pong":true'* ]]; then
+        ok "socket responsive at $SOCKET"
+    else
+        bad "socket exists but ping failed"
+    fi
+else
+    bad "no socket at $SOCKET"
+fi
+
+hdr "Logs (last 3 lines per file)"
+for f in "$ANTARES_STATE/logs"/*.log; do
+    [[ -f "$f" ]] || continue
+    printf '  %s%s%s\n' "$BOLD" "$(basename "$f")" "$RESET"
+    tail -n 3 "$f" 2>/dev/null | sed 's/^/    /'
+done
+
+echo

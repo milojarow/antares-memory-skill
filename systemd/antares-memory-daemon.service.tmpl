@@ -1,0 +1,21 @@
+[Unit]
+Description=Antares Memory search daemon (semantic + BM25)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@ANTARES_VENV_PY@ @ANTARES_DAEMON_SCRIPT@
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HOME=%h/.cache/huggingface
+Environment=ANTARES_MODEL=@ANTARES_MODEL@
+Environment=CLAUDE_MEMORY_HOME=@CLAUDE_MEMORY_HOME@
+Environment=ANTARES_STATE=@ANTARES_STATE@
+MemoryMax=1500M
+TasksMax=64
+
+[Install]
+WantedBy=default.target
