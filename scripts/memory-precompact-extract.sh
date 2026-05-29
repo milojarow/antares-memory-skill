@@ -106,14 +106,13 @@ export CLAUDE_HEADLESS=1
 log "BEFORE_CLAUDE"
 trap - ERR
 set +e
-output=$(timeout --kill-after=5 "$ANTARES_PRECOMPACT_TIMEOUT" claude -p "$sub_prompt" \
-    --model "$ANTARES_PRECOMPACT_MODEL" \
-    --output-format json \
-    --max-budget-usd "$ANTARES_PRECOMPACT_BUDGET" \
-    --no-session-persistence \
-    --permission-mode bypassPermissions \
-    --append-system-prompt-file "$PROMPT_FILE" \
-    </dev/null 2>>"$LOG")
+# extractor lobo — Agent SDK, ISOLATED (settingSources []). Reads the sub-prompt
+# on stdin; prints a CLI-compatible JSON envelope. Replaces the contaminated
+# `claude -p` (which loaded CLAUDE.md + persona). CLAUDE_HEADLESS stays set as
+# defense-in-depth against the search-hook re-triggering, in case settingSources
+# does not fully suppress plugin hooks.
+output=$(timeout --kill-after=5 "$ANTARES_PRECOMPACT_TIMEOUT" \
+    node "$SCRIPT_DIR/../agents-sdk/extractor.mjs" <<<"$sub_prompt" 2>>"$LOG")
 rc=$?
 log "AFTER_CLAUDE rc=$rc output_len=${#output}"
 trap 'exit 0' ERR

@@ -1,0 +1,10 @@
+# Node deps for the Agent SDK lobos — never commit (101+ packages)
+node_modules/
+agents-sdk/node_modules/
+
+# Claude Code operator state (the repo's own CLAUDE.md IS committed — skill-repo convention)
+.claude/
+
+# OS / editor cruft
+.DS_Store
+*.swp
