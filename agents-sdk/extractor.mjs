@@ -17,7 +17,11 @@ import { fileURLToPath } from "node:url";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const policy = readFileSync(join(__dir, "..", "scripts", "memory-precompact-prompt.txt"), "utf8");
-const subPrompt = readFileSync(0, "utf8"); // stdin: the sub-prompt built by the .sh
+// stdin — async stream read. readFileSync(0) throws EAGAIN when fd0 is
+// non-blocking (intermittent under `printf | node`), so iterate the stream.
+let subPrompt = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) subPrompt += chunk;
 
 const model = process.env.ANTARES_PRECOMPACT_MODEL || "sonnet";
 const effort = process.env.ANTARES_PRECOMPACT_EFFORT || "medium";

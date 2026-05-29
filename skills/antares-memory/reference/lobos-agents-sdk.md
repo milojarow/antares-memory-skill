@@ -1,0 +1,69 @@
+# The internal pack — antares' 5 lobos (Agent SDK)
+
+Antares' judgment points run as **isolated subagents** ("lobos"), not as a bare
+`claude -p`. The old `claude -p` extractor loaded your `CLAUDE.md` + persona files
+into every run → extraction biased by the operator's voice and inflated token use.
+The lobos run with `settingSources: []`, so they see **only** the task you hand
+them — no CLAUDE.md, no persona, no auto-memory.
+
+Four lobos run headless through the Claude Agent SDK; one (the router) is a
+filesystem subagent dispatched in-session.
+
+## Prerequisite — bring the SDK (one command)
+
+The headless lobos need `@anthropic-ai/claude-agent-sdk`. It is **not vendored**
+(`node_modules/` is gitignored) — the skill ships the config, you bring the SDK:
+
+```bash
+cd "$(dirname "$(command -v claude)")"   # or wherever the plugin cache lives
+# In practice: cd into the installed plugin's agents-sdk/ dir, then:
+npm install        # installs @anthropic-ai/claude-agent-sdk from package.json
+```
+
+The plugin ships `agents-sdk/package.json`; `npm install` there is the whole setup.
+Verify: `node -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log('SDK ok'))"`.
+
+- **Auth** — uses your Claude subscription login (`apiKeySource=none`). Do **not**
+  set `ANTHROPIC_API_KEY`; it wins and bills the API. For unattended machines,
+  `claude setup-token` → export `CLAUDE_CODE_OAUTH_TOKEN`.
+- **Node gotcha** — every `.mjs` passes `pathToClaudeCodeExecutable: "claude"`; the
+  bundled binary fails to launch on node ≥24.
+- **stdin** — lobos read their task via async stream iteration, not `readFileSync(0)`
+  (which throws `EAGAIN` when fd0 is non-blocking under `printf | node`).
+
+## The pack
+
+| Lobo | Runtime | Trigger | Access | Job |
+|---|---|---|---|---|
+| **extractor** | SDK headless | PreCompact | reads the dying transcript | distill what mattered into memories — isolated, no persona bias (replaces the old `claude -p`) |
+| **router** | filesystem agent | dispatched on "save this" / "guarda esto" | reads + writes memories | pick scope (home / project / both / persona) and **dedup semantically** before writing |
+| **recall** | SDK headless | search-hook strong topic hit | read-only | episodic recall — "did we cover this before? what happened?" |
+| **gardener** | SDK headless | SessionEnd, gate ≥24h | read + annotate (non-destructive) | periodic base hygiene: near-dups, contradictions, obsolescence — marks + reports, never deletes |
+| **index-curator** | SDK headless | SessionEnd, gate ≥7d | read + write `.index-suggestions.md` only | propose `MEMORY.md` promotions/demotions — **never edits the index** (operator-curated) |
+
+Every headless lobo: `settingSources: []` (isolation), `bypassPermissions`, a capped
+`maxTurns`, and a fire-and-forget launcher with a frequency **gate** + **lock** so it
+never blocks session close nor runs twice at once.
+
+## Scaling: IO in bash, judgment in the LLM
+
+A base with 150+ memories will **time out** a lobo that Reads every body. So the
+launchers pre-digest. The curator launcher builds `filename: description` (frontmatter
+only) for every memory and passes it **inline**, with `MEMORY.md`, in the task prompt —
+the lobo judges from text in a few turns, no base sweep. Same split as the extractor:
+the agent judges, the shell does the IO. When you add a maintenance lobo over the whole
+base, digest first; don't make the model read 150 files.
+
+## Knobs (env vars — no script edits, survive plugin updates)
+
+`ANTARES_PRECOMPACT_MODEL` / `_TIMEOUT` (extractor) · `ANTARES_GARDENER_MODEL` /
+`_EFFORT` / `_TIMEOUT` · `ANTARES_CURATOR_MODEL` / `_EFFORT` / `_TIMEOUT` ·
+`ANTARES_RECALL_MODEL` / `_EFFORT`. Defaults: model `sonnet`, effort `medium`.
+
+## The one rule when adding a lobo
+
+**Never cascade headless calls.** A headless run that can spawn another headless run
+is a fork bomb (the 2026-04-01 incident: 101 sessions / 723 containers in 74 minutes).
+Four defenses, always: `settingSources: []`, **no** Agent tool in `allowedTools`,
+`CLAUDE_HEADLESS=1` exported, and a capped budget / `maxTurns`. The launchers' gate +
+lock are the outer ring of the same defense.

@@ -1,27 +1,26 @@
 #!/usr/bin/env node
-// antares "gardener" lobo — headless maintenance agent (SessionEnd), ISOLATED
-// (settingSources: []). Cross-checks the existing memory base for drift that
-// per-entry write-time dedup can't catch: near-duplicates, contradictions,
-// time-obsolescence. CONSERVATIVE v1 — annotates + reports, never deletes or
-// destructively merges (policy: memory-gardener-prompt.txt).
-//
-// Reads its task prompt (which dirs to garden) from stdin. Prints a
-// CLI-compatible JSON envelope {result, subtype, total_cost_usd, num_turns}.
+// antares "index-curator" lobo — headless, ISOLATED (settingSources: []).
+// PROPOSES MEMORY.md index promotions/demotions (memories that became recurrent/
+// critical → always-on; stale entries → out) but NEVER edits MEMORY.md. Writes
+// proposals to <HOME>/.index-suggestions.md for the operator to apply by hand.
+// Policy: memory-curator-prompt.txt. Reads its task prompt (dirs + MEMORY.md +
+// optional search log) from stdin. Prints a CLI-compatible JSON envelope.
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const policy = readFileSync(join(__dir, "..", "scripts", "memory-gardener-prompt.txt"), "utf8");
+const policy = readFileSync(join(__dir, "..", "scripts", "memory-curator-prompt.txt"), "utf8");
+
 // stdin — async stream read. readFileSync(0) throws EAGAIN when fd0 is
 // non-blocking (intermittent under `printf | node`), so iterate the stream.
 let taskPrompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) taskPrompt += chunk;
 
-const model = process.env.ANTARES_GARDENER_MODEL || "sonnet";
-const effort = process.env.ANTARES_GARDENER_EFFORT || "medium";
+const model = process.env.ANTARES_CURATOR_MODEL || "sonnet";
+const effort = process.env.ANTARES_CURATOR_EFFORT || "medium";
 
 let result = "", subtype = "error_unknown", cost = null, turns = null;
 try {
@@ -31,15 +30,15 @@ try {
       pathToClaudeCodeExecutable: "claude",
       model,
       effort,
-      settingSources: [],                   // isolated: no persona bias while curating
+      settingSources: [],                          // isolated
       systemPrompt: policy,
-      allowedTools: ["Read", "Edit", "Grep", "Glob", "Bash"], // Edit (annotate) — NO Write (no new files), non-destructive
+      allowedTools: ["Read", "Write"], // judges from inline digest; Read only to confirm a candidate; Write ONLY for .index-suggestions.md (policy forbids touching MEMORY.md)
       permissionMode: "bypassPermissions",
-      maxTurns: 60,                          // crosses the whole base
+      maxTurns: 12, // digest is inline → a few turns: judge → maybe confirm → write
     },
   })) {
     if (m.type === "system" && m.subtype === "init") {
-      console.error(`[gardener] init apiKeySource=${m.apiKeySource} model=${m.model} effort=${effort}`);
+      console.error(`[index-curator] init apiKeySource=${m.apiKeySource} model=${m.model} effort=${effort}`);
     }
     if (m.type === "result") {
       subtype = m.subtype;
@@ -49,7 +48,7 @@ try {
     }
   }
 } catch (err) {
-  console.error(`[gardener] EXCEPTION ${err?.message || err}`);
+  console.error(`[index-curator] EXCEPTION ${err?.message || err}`);
   subtype = "error_exception";
   result = String(err?.message || err);
 }

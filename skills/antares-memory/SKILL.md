@@ -1,6 +1,6 @@
 ---
 name: antares-memory
-description: Persistent semantic + keyword memory system for Claude Code. Use when writing or editing memory files (`feedback_*`, `reference_*`, `project_*`, `user_*`, `tool_*`); when deciding HOME vs CURRENT slug for a memory; when the user says "save this", "memorize", "remember", "recall", "guarda esto", "olvida esto"; when reading or editing memory files under `~/.claude/projects/<slug>/memory/`, `MEMORY.md`, or `journal/*.md`; when tuning embeddings, sentence-transformers, BM25 hybrid search, threshold/weights, or the search daemon; when running `/antares-memory:install|status|migrate|uninstall`; when troubleshooting the daemon, FTS5, the precompact extractor, the `<auto-loaded-memory>` block not appearing, or model issues; when diagnosing why a remembered fact isn't being recalled; when handling the PreCompact headless `claude -p` extraction; when designing the frontmatter taxonomy or dedup discipline.
+description: Persistent semantic + keyword memory system for Claude Code. Use when writing or editing memory files (`feedback_*`, `reference_*`, `project_*`, `user_*`, `tool_*`); when deciding HOME vs CURRENT slug for a memory; when the user says "save this", "memorize", "remember", "recall", "guarda esto", "olvida esto"; when reading or editing memory files under `~/.claude/projects/<slug>/memory/`, `MEMORY.md`, or `journal/*.md`; when tuning embeddings, sentence-transformers, BM25 hybrid search, threshold/weights, or the search daemon; when running `/antares-memory:install|status|migrate|uninstall`; when troubleshooting the daemon, FTS5, the precompact extractor, the `<auto-loaded-memory>` block not appearing, or model issues; when diagnosing why a remembered fact isn't being recalled; when handling the PreCompact extraction (isolated Agent SDK subagents — "lobos"); when designing the frontmatter taxonomy or dedup discipline.
 ---
 
 # antares-memory
@@ -34,7 +34,7 @@ Five layers, each documented in `reference/`:
 2. **Indexer** — chunked embeddings (paragraph-aware, ~120 tokens, overlap 30) + FTS5, stored in `<slug>/memory/.memory-index.db`
 3. **Search** — hybrid cosine (70%) + BM25 (30%), threshold 0.35; daemon keeps the model in RAM
 4. **Auto-inject** — UserPromptSubmit hook queries the daemon, embeds top-5 hits as an `<auto-loaded-memory>` block
-5. **Auto-extract** — PreCompact hook spawns headless `claude -p` to extract memories from the transcript before compaction
+5. **Auto-extract** — PreCompact hook runs an isolated Agent SDK subagent (the **extractor lobo**) to distill memories before compaction. Four more lobos handle routing, recall, and base/index maintenance — see [reference/lobos-agents-sdk.md](reference/lobos-agents-sdk.md)
 
 ## When to use
 
@@ -76,7 +76,9 @@ UserPromptSubmit ──► search daemon ──► inject top-5 hits as <auto-lo
                                        ▼
 Write/Edit a .md ──► PostToolUse async reindex (of the affected slug)
                                        ▼
-PreCompact ──► spawn `claude -p` ──► extracts new memories ──► reindex
+PreCompact ──► extractor lobo (isolated SDK) ──► extracts new memories ──► reindex
+                                       ▼
+SessionEnd ──► gardener lobo (≥24h) + index-curator lobo (≥7d) — fire-and-forget
 ```
 
 Plus the always-on layer: Claude Code itself loads `MEMORY.md` of the cwd's slug at session start.
@@ -117,3 +119,4 @@ Every hook is failsafe: if the daemon is down, the venv isn't ready, or any step
 - [reference/writing-memories.md](reference/writing-memories.md) — decision rules, dedup discipline, when to enrich vs create
 - [reference/tuning-search.md](reference/tuning-search.md) — threshold, weights, top-k, model swap, chunk size
 - [reference/troubleshooting.md](reference/troubleshooting.md) — daemon, FTS5, indexer, hooks, extractor
+- [reference/lobos-agents-sdk.md](reference/lobos-agents-sdk.md) — the 5 lobos (Agent SDK subagents): SDK install, isolation, triggers, scaling (digest-in-bash), fork-bomb defenses

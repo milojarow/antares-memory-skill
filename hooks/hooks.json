@@ -36,6 +36,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-gardener-launch.sh\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-curator-launch.sh\"",
+            "timeout": 10
           }
         ]
       }

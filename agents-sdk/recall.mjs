@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const policy = readFileSync(join(__dir, "..", "scripts", "memory-recall-prompt.txt"), "utf8");
-const taskPrompt = readFileSync(0, "utf8"); // stdin
+// stdin — async stream read. readFileSync(0) throws EAGAIN when fd0 is
+// non-blocking (intermittent under `printf | node`), so iterate the stream.
+let taskPrompt = "";
+process.stdin.setEncoding("utf8");
+for await (const chunk of process.stdin) taskPrompt += chunk;
 
 const model = process.env.ANTARES_RECALL_MODEL || "sonnet";
 const effort = process.env.ANTARES_RECALL_EFFORT || "low";
