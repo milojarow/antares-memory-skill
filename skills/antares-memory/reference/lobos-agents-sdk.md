@@ -17,10 +17,10 @@ The headless lobos need `@anthropic-ai/claude-agent-sdk`. It is **not vendored**
 ```bash
 cd "$(dirname "$(command -v claude)")"   # or wherever the plugin cache lives
 # In practice: cd into the installed plugin's agents-sdk/ dir, then:
-npm install        # installs @anthropic-ai/claude-agent-sdk from package.json
+npm ci             # clean, reproducible install from package-lock.json
 ```
 
-The plugin ships `agents-sdk/package.json`; `npm install` there is the whole setup.
+The plugin ships `agents-sdk/package.json` + `package-lock.json`; `npm ci` there is the whole setup (`npm install` also works).
 Verify: `node -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log('SDK ok'))"`.
 
 - **Auth** — uses your Claude subscription login (`apiKeySource=none`). Do **not**
