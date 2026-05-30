@@ -58,11 +58,13 @@ fi
 
 # Extract the DELTA: new .jsonl lines [wm+1 .. total], preprocessed to user/assistant
 # text (same jq shape the old extractor used — strips tool calls/results).
-# Cap at last ~100KB: a session already IN-FLIGHT when the cronista is first
-# enabled has no watermark (defaults to 0), so its entire backlog would be the
-# "delta". The cap keeps the lobo from choking on MBs and captures the recent
-# tail; from the next trigger on it's truly incremental. (Already-CLOSED
-# historical sessions never fire a hook, so they're never processed at all.)
+# Cap at last ~300KB: bounds the delta so the lobo never chokes on a multi-MB
+# backlog (a session reanimated with no watermark, defaults to 0). 300KB ≈ 75K
+# tokens — well under sonnet's ~200K ceiling — and covers a full long session up
+# to a compact (measured: a long real session ran ~190KB of user/assistant text).
+# 100KB was too tight: it dropped ~half of such a session. From the next trigger
+# on it's truly incremental (only the new tramo). Already-CLOSED historical
+# sessions never fire a hook, so they're never processed at all.
 delta="$DELTA_DIR/$session_id.md"
 {
     echo "# Session delta (new since line $wm) — $(date '+%Y-%m-%d %H:%M')"
@@ -72,7 +74,7 @@ delta="$DELTA_DIR/$session_id.md"
         .message.content[]? |
         select(.type == "text") |
         "## [" + (.type // "unknown") + "]\n\n" + .text + "\n"
-    ' 2>>"$LOG" | tail -c 100000
+    ' 2>>"$LOG" | tail -c 300000
 } > "$delta" 2>>"$LOG"
 delta_size=$(stat -c %s "$delta" 2>/dev/null || echo 0)
 log "delta size=${delta_size}B"
@@ -153,7 +155,7 @@ log "LAUNCH chronicle pipeline (background) event=$event session=$session_id"
     export CLAUDE_HEADLESS=1
 
     # 1. cronista → journal
-    c_out=$(printf '%s' "$cronista_task" | timeout "${ANTARES_CRONISTA_TIMEOUT:-300}" \
+    c_out=$(printf '%s' "$cronista_task" | timeout "${ANTARES_CRONISTA_TIMEOUT:-420}" \
         node "$SCRIPT_DIR/../agents-sdk/cronista.mjs" 2>>"$LOG")
     c_rc=$?
     c_res=$(printf '%s' "$c_out" | jq -r '.result // empty' 2>/dev/null | head -c 300)
@@ -169,7 +171,7 @@ log "LAUNCH chronicle pipeline (background) event=$event session=$session_id"
     fi
 
     # 2. destilador → memories (chained, same delta the cronista just chronicled).
-    d_out=$(printf '%s' "$destilador_task" | timeout "${ANTARES_DISTILLER_TIMEOUT:-300}" \
+    d_out=$(printf '%s' "$destilador_task" | timeout "${ANTARES_DISTILLER_TIMEOUT:-480}" \
         node "$SCRIPT_DIR/../agents-sdk/destiller.mjs" 2>>"$LOG")
     d_rc=$?
     d_res=$(printf '%s' "$d_out" | jq -r '.result // empty' 2>/dev/null | head -c 300)
