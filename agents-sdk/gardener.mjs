@@ -2,8 +2,10 @@
 // antares "gardener" lobo — headless maintenance agent (SessionEnd), ISOLATED
 // (settingSources: []). Cross-checks the existing memory base for drift that
 // per-entry write-time dedup can't catch: near-duplicates, contradictions,
-// time-obsolescence. CONSERVATIVE v1 — annotates + reports, never deletes or
-// destructively merges (policy: memory-gardener-prompt.txt).
+// time-obsolescence. The operator delegated hygiene: it ACTS — merges duplicates
+// (Edit survivor) and lists redundant/obsolete files for the launcher to delete
+// after a full backup. Conservative; never loses unique content. The lobo itself
+// never rm's — it only Edits + Writes a deletions list (policy: memory-gardener-prompt.txt).
 //
 // Reads its task prompt (which dirs to garden) from stdin. Prints a
 // CLI-compatible JSON envelope {result, subtype, total_cost_usd, num_turns}.
@@ -20,8 +22,8 @@ let taskPrompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) taskPrompt += chunk;
 
-const model = process.env.ANTARES_GARDENER_MODEL || "sonnet";
-const effort = process.env.ANTARES_GARDENER_EFFORT || "medium";
+const model = process.env.ANTARES_GARDENER_MODEL || "opus";  // it decides destinies now (merge/remove), not just flags
+const effort = process.env.ANTARES_GARDENER_EFFORT || "high";
 
 let result = "", subtype = "error_unknown", cost = null, turns = null;
 try {
@@ -33,9 +35,9 @@ try {
       effort,
       settingSources: [],                   // isolated: no persona bias while curating
       systemPrompt: policy,
-      allowedTools: ["Read", "Edit", "Grep", "Glob", "Bash"], // Edit (annotate) — NO Write (no new files), non-destructive
+      allowedTools: ["Read", "Edit", "Write"], // Edit merges survivors; Write appends the deletions list + changelog + own memory; the launcher validates+executes deletions (lobo never rm's)
       permissionMode: "bypassPermissions",
-      maxTurns: 60,                          // crosses the whole base
+      maxTurns: 40,                          // triage digest -> merge survivors -> list deletions -> changelog
     },
   })) {
     if (m.type === "system" && m.subtype === "init") {

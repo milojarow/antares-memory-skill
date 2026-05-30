@@ -38,7 +38,7 @@ Verify: `node -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log(
 | **extractor** | SDK headless | PreCompact | reads the dying transcript | distill what mattered into memories — isolated, no persona bias (replaces the old `claude -p`) |
 | **router** | filesystem agent | dispatched on "save this" / "guarda esto" | reads + writes memories | pick scope (home / project / both / persona) and **dedup semantically** before writing |
 | **recall** | SDK headless | search-hook strong topic hit | read-only | episodic recall — "did we cover this before? what happened?" |
-| **gardener** | SDK headless | SessionEnd, gate ≥24h | digest-triage → reads only suspicious pairs → annotate (non-destructive) | periodic base hygiene: near-dups, contradictions, obsolescence — flags + reports, never deletes |
+| **gardener** | SDK headless (**opus**) | SessionEnd, gate ≥24h | digest-triage → merges survivors (Edit) → lists redundant files; launcher backs up + deletes | periodic base hygiene: **acts** — consolidates near-dups, removes obsolete (folds unique content into the survivor first); leaves no notes to review |
 | **index-curator** | SDK headless (**opus**) | SessionEnd, gate ≥7d | reads digest + its prefs memory, **edits `MEMORY.md`** | OWNS the always-on index: decides + applies promotions/demotions, keeps a persistent operator-preferences memory, backs up `MEMORY.md` first, writes a changelog. Conservative on removal |
 
 Every headless lobo: `settingSources: []` (isolation), `bypassPermissions`, a capped
@@ -61,6 +61,15 @@ it edits the index directly. Two guardrails make that safe — the launcher back
 and the curator reads/writes a persistent preferences memory
 (`$ANTARES_STATE/curator-memory.md`) so its taste stays consistent across runs, leaving
 a changelog (`.index-changelog.md`) of every change for the operator to audit.
+
+The gardener likewise **acts** instead of annotating — it merges duplicates and removes
+obsolete memories. Same delegation, stronger guardrails: the launcher takes a FULL tar
+backup of the base before each run (`$ANTARES_STATE/base-backups/`, last 5), the lobo
+**never deletes** (it Edits survivors and Writes a deletions list that the launcher
+validates + executes — only `.md` inside the memory dir, never `MEMORY.md`), it folds
+unique content into the survivor *before* listing a file, and it keeps its own
+preferences memory + `.gardener-changelog.md`. The one rule it honors above all: never
+lose an important memory — when unsure, KEEP.
 
 ## Knobs (env vars — no script edits, survive plugin updates)
 
