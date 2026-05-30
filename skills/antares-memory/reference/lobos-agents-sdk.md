@@ -6,8 +6,8 @@ into every run → extraction biased by the operator's voice and inflated token 
 The lobos run with `settingSources: []`, so they see **only** the task you hand
 them — no CLAUDE.md, no persona, no auto-memory.
 
-Four lobos run headless through the Claude Agent SDK; one (the router) is a
-filesystem subagent dispatched in-session.
+Three lobos run headless through the Claude Agent SDK (extractor, gardener, curator);
+two (router, recall) are filesystem subagents the parent dispatches in-session.
 
 ## Prerequisite — bring the SDK (one command)
 
@@ -37,7 +37,7 @@ Verify: `node -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log(
 |---|---|---|---|---|
 | **extractor** | SDK headless | PreCompact | reads the dying transcript | distill what mattered into memories — isolated, no persona bias (replaces the old `claude -p`) |
 | **router** | filesystem agent | dispatched on "save this" / "guarda esto" | reads + writes memories | pick scope (home / project / both / persona) and **dedup semantically** before writing |
-| **recall** | SDK headless | search-hook strong topic hit | read-only | episodic recall — "did we cover this before? what happened?" |
+| **recall** | filesystem agent | parent dispatches on history questions ("¿ya tratamos X?", "¿qué decidimos?") | read-only (Read/Grep/Glob) | episodic recall — synthesizes what happened / when / decided from memories + journals (on-demand, not the hot path) |
 | **gardener** | SDK headless (**opus**) | SessionEnd, gate ≥24h | digest-triage → merges survivors (Edit) → lists redundant files; launcher backs up + deletes | periodic base hygiene: **acts** — consolidates near-dups, removes obsolete (folds unique content into the survivor first); leaves no notes to review |
 | **index-curator** | SDK headless (**opus**) | SessionEnd, gate ≥7d | reads digest + its prefs memory, **edits `MEMORY.md`** | OWNS the always-on index: decides + applies promotions/demotions, keeps a persistent operator-preferences memory, backs up `MEMORY.md` first, writes a changelog. Conservative on removal |
 
