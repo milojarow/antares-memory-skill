@@ -19,8 +19,8 @@ let taskPrompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) taskPrompt += chunk;
 
-const model = process.env.ANTARES_CURATOR_MODEL || "sonnet";
-const effort = process.env.ANTARES_CURATOR_EFFORT || "medium";
+const model = process.env.ANTARES_CURATOR_MODEL || "opus";  // operator delegated index ownership → strongest model
+const effort = process.env.ANTARES_CURATOR_EFFORT || "high"; // high-judgment: what stays always-on, what goes
 
 let result = "", subtype = "error_unknown", cost = null, turns = null;
 try {
@@ -32,9 +32,9 @@ try {
       effort,
       settingSources: [],                          // isolated
       systemPrompt: policy,
-      allowedTools: ["Read", "Write"], // judges from inline digest; Read only to confirm a candidate; Write ONLY for .index-suggestions.md (policy forbids touching MEMORY.md)
+      allowedTools: ["Read", "Edit", "Write"], // Edit MEMORY.md in place + Write changelog & own-memory; Read to confirm a candidate
       permissionMode: "bypassPermissions",
-      maxTurns: 12, // digest is inline → a few turns: judge → maybe confirm → write
+      maxTurns: 30, // reads prefs -> decides -> edits MEMORY.md -> changelog -> updates own memory
     },
   })) {
     if (m.type === "system" && m.subtype === "init") {

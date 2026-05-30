@@ -38,8 +38,8 @@ Verify: `node -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log(
 | **extractor** | SDK headless | PreCompact | reads the dying transcript | distill what mattered into memories — isolated, no persona bias (replaces the old `claude -p`) |
 | **router** | filesystem agent | dispatched on "save this" / "guarda esto" | reads + writes memories | pick scope (home / project / both / persona) and **dedup semantically** before writing |
 | **recall** | SDK headless | search-hook strong topic hit | read-only | episodic recall — "did we cover this before? what happened?" |
-| **gardener** | SDK headless | SessionEnd, gate ≥24h | read + annotate (non-destructive) | periodic base hygiene: near-dups, contradictions, obsolescence — marks + reports, never deletes |
-| **index-curator** | SDK headless | SessionEnd, gate ≥7d | read + write `.index-suggestions.md` only | propose `MEMORY.md` promotions/demotions — **never edits the index** (operator-curated) |
+| **gardener** | SDK headless | SessionEnd, gate ≥24h | digest-triage → reads only suspicious pairs → annotate (non-destructive) | periodic base hygiene: near-dups, contradictions, obsolescence — flags + reports, never deletes |
+| **index-curator** | SDK headless (**opus**) | SessionEnd, gate ≥7d | reads digest + its prefs memory, **edits `MEMORY.md`** | OWNS the always-on index: decides + applies promotions/demotions, keeps a persistent operator-preferences memory, backs up `MEMORY.md` first, writes a changelog. Conservative on removal |
 
 Every headless lobo: `settingSources: []` (isolation), `bypassPermissions`, a capped
 `maxTurns`, and a fire-and-forget launcher with a frequency **gate** + **lock** so it
@@ -47,18 +47,28 @@ never blocks session close nor runs twice at once.
 
 ## Scaling: IO in bash, judgment in the LLM
 
-A base with 150+ memories will **time out** a lobo that Reads every body. So the
-launchers pre-digest. The curator launcher builds `filename: description` (frontmatter
-only) for every memory and passes it **inline**, with `MEMORY.md`, in the task prompt —
-the lobo judges from text in a few turns, no base sweep. Same split as the extractor:
-the agent judges, the shell does the IO. When you add a maintenance lobo over the whole
-base, digest first; don't make the model read 150 files.
+A base with 150+ memories will **time out** a lobo that Reads every body (observed:
+the gardener at rc=124 / 300s). So both maintenance launchers (gardener and curator)
+pre-digest: bash builds `filename: description` (frontmatter only) for every memory and
+passes it **inline** in the task prompt. The lobo triages from text in a few turns and
+reads only the handful of files a real candidate needs — no base sweep. Same split as
+the extractor: the agent judges, the shell does the IO. When you add a maintenance lobo
+over the whole base, digest first; don't make the model read 150 files.
+
+The curator additionally **owns** `MEMORY.md`: the operator delegated index curation, so
+it edits the index directly. Two guardrails make that safe — the launcher backs up
+`MEMORY.md` before every run (last 10 kept under `$ANTARES_STATE/memory-md-backups/`),
+and the curator reads/writes a persistent preferences memory
+(`$ANTARES_STATE/curator-memory.md`) so its taste stays consistent across runs, leaving
+a changelog (`.index-changelog.md`) of every change for the operator to audit.
 
 ## Knobs (env vars — no script edits, survive plugin updates)
 
 `ANTARES_PRECOMPACT_MODEL` / `_TIMEOUT` (extractor) · `ANTARES_GARDENER_MODEL` /
 `_EFFORT` / `_TIMEOUT` · `ANTARES_CURATOR_MODEL` / `_EFFORT` / `_TIMEOUT` ·
-`ANTARES_RECALL_MODEL` / `_EFFORT`. Defaults: model `sonnet`, effort `medium`.
+`ANTARES_RECALL_MODEL` / `_EFFORT`. Defaults: model `sonnet`, effort `medium` — except
+the **curator**, which defaults to **opus / high** (it owns the index; the operator wants
+its best judgment on what stays always-on).
 
 ## The one rule when adding a lobo
 

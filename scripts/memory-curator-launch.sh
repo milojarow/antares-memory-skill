@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # SessionEnd hook — fire-and-forget launcher for the "index-curator" lobo.
-# Guards: gate (~7d — the index changes slowly), lock, background+disown.
-#
-# Scaling fix: a base with 150+ memories times out a lobo that Reads bodies.
-# Deciding the INDEX needs only each memory's frontmatter `description`, not its
-# body. So bash builds a DIGEST (filename + description) and passes it INLINE,
-# with MEMORY.md, in the task prompt. The lobo judges from the prompt in a few
-# turns — no base sweep. IO in bash, judgment in the LLM (same split as extractor).
+# The operator delegated index curation: the curator DECIDES and EDITS MEMORY.md
+# itself (opus, high effort). This launcher gives it three things the bare prompt
+# can't: (1) a DIGEST of the base (so it never reads 150 bodies), (2) its
+# PERSISTENT MEMORY of operator preferences (read in, updated out), and (3) a
+# BACKUP of MEMORY.md taken before every run — the index is always-on, so any
+# auto-edit must be revertible. Guards: gate ~7d, lock, background+disown.
 #
 # Failsafe: ANY error → exit 0.
 
@@ -20,6 +19,8 @@ source "$SCRIPT_DIR/lib/common.sh"
 LOG="$ANTARES_STATE/logs/memory-curator.log"
 LOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/antares-memory-curator.lock"
 STAMP="$ANTARES_STATE/curator-last-run"
+PREFS="$ANTARES_STATE/curator-memory.md"          # persistent memory (operator preferences)
+BACKUP_DIR="$ANTARES_STATE/memory-md-backups"
 
 ts() { date -Iseconds; }
 log() { printf '[%s] %s\n' "$(ts)" "$*" >>"$LOG"; }
@@ -47,39 +48,51 @@ fi
 
 home_dir="$(antares_home_memory_dir)"
 mem_index="$home_dir/MEMORY.md"
+changelog="$home_dir/.index-changelog.md"
 today=$(date +%Y-%m-%d)
 
-# Build the digest: filename + frontmatter description of every memory (NOT bodies).
+# Digest: filename + frontmatter description of every memory (NOT bodies).
 digest=""
 shopt -s nullglob
 for f in "$home_dir"/*.md; do
-    base=$(basename "$f")
-    [[ "$base" == "MEMORY.md" ]] && continue
-    desc=$(grep -m1 '^description:' "$f" 2>/dev/null \
+    b=$(basename "$f")
+    [[ "$b" == "MEMORY.md" ]] && continue
+    d=$(grep -m1 '^description:' "$f" 2>/dev/null \
         | sed -E 's/^description:[[:space:]]*//; s/^"//; s/"$//')
-    [[ -z "$desc" ]] && desc="(no description)"
-    digest+="- ${base}: ${desc}"$'\n'
+    [[ -z "$d" ]] && d="(no description)"
+    digest+="- ${b}: ${d}"$'\n'
 done
 shopt -u nullglob
-
 n_mem=$(printf '%s' "$digest" | grep -c '^- ' || true)
+
 index_body=$(cat "$mem_index" 2>/dev/null || echo "(MEMORY.md absent)")
+prefs_body=$(cat "$PREFS" 2>/dev/null || echo "(no preferences recorded yet — infer the operator's taste from the CURRENT INDEX they hand-curated, and record what you learn to your memory file.)")
 
-task="Today is $today. Curate the always-on index.
+task="Today is $today. You own the always-on index. Decide and APPLY.
 
-== CURRENT INDEX (MEMORY.md — do NOT edit) ==
+== YOUR MEMORY (operator preferences + your past decisions — read FIRST; update it at $PREFS) ==
+$prefs_body
+
+== CURRENT INDEX ($mem_index — edit this file in place) ==
 $index_body
 
 == ALL MEMORIES ($n_mem total — filename: description) ==
 $digest
 
-Judge from the digest above. Only Read a specific file under $home_dir if you must confirm a single candidate — never sweep the base. Write your promotions/demotions to $home_dir/.index-suggestions.md per your policy. NEVER edit MEMORY.md."
+Apply promotions/demotions directly to $mem_index per your policy (conservative on removal — when unsure, KEEP). Write a changelog of what you changed and why to $changelog. Update your memory at $PREFS if you learned anything. The memory files live in $home_dir."
 
-log "LAUNCH index-curator (background) cwd=$cwd memories=$n_mem"
+log "LAUNCH index-curator (background) cwd=$cwd memories=$n_mem model=${ANTARES_CURATOR_MODEL:-opus}"
 (
     trap 'rm -f "$LOCK"' EXIT
     export CLAUDE_HEADLESS=1
-    out=$(printf '%s' "$task" | timeout "${ANTARES_CURATOR_TIMEOUT:-300}" \
+    # Backup MEMORY.md before the curator can touch it (always-on file → revertible).
+    if [[ -f "$mem_index" ]]; then
+        mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+        cp "$mem_index" "$BACKUP_DIR/MEMORY.md.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+        # Keep only the last 10 backups.
+        ls -1t "$BACKUP_DIR"/MEMORY.md.* 2>/dev/null | tail -n +11 | xargs -r rm -f
+    fi
+    out=$(printf '%s' "$task" | timeout "${ANTARES_CURATOR_TIMEOUT:-420}" \
         node "$SCRIPT_DIR/../agents-sdk/index-curator.mjs" 2>>"$LOG")
     rc=$?
     echo "$now" > "$STAMP"
